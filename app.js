@@ -75,6 +75,7 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     lastName: 'Huber',
     personnelNumber: '1001',
     birthday: '1988-05-12',
+    email: 'alex.huber@example.com',
     employmentPercent: employment[0].id,
     employmentHours: employment[0].id,
     functionId: functions[0].id,
@@ -96,6 +97,7 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     lastName: 'Mayr',
     personnelNumber: '1002',
     birthday: '1990-09-02',
+    email: 'bianca.mayr@example.com',
     employmentPercent: employment[1].id,
     employmentHours: employment[1].id,
     functionId: functions[1].id,
@@ -117,6 +119,7 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     lastName: 'Lenz',
     personnelNumber: '1003',
     birthday: '1992-03-21',
+    email: 'chris.lenz@example.com',
     employmentPercent: employment[2].id,
     employmentHours: employment[2].id,
     functionId: functions[0].id,
@@ -142,6 +145,7 @@ const DEFAULT_LOGS = {
   employment: [],
   rules: [],
   vacationLimits: [],
+  tickets: [],
 };
 
 const defaultWeekdayServices = () => ({
@@ -275,10 +279,14 @@ const ticketForm = document.getElementById('ticketForm');
 const ticketNameInput = document.getElementById('ticketName');
 const ticketPriorityInput = document.getElementById('ticketPriority');
 const ticketDescriptionInput = document.getElementById('ticketDescription');
+const ticketReporterInput = document.getElementById('ticketReporter');
+const ticketReporterEmailInput = document.getElementById('ticketReporterEmail');
 const ticketStatusFilter = document.getElementById('ticketStatusFilter');
 const ticketList = document.getElementById('ticketList');
+const ticketLog = document.getElementById('ticketLog');
 const logElements = {
   roster: document.getElementById('rosterLog'),
+  tickets: ticketLog,
 };
 
 let state = loadState();
@@ -383,6 +391,7 @@ function normalizeEmployees(employees = [], groups = []) {
       vacationDays: Number.isFinite(vacationDays) ? vacationDays : 0,
       vacations: normalizeVacationEntries(emp.vacations),
       sickLeaves: normalizeSickEntries(emp.sickLeaves),
+      email: typeof emp.email === 'string' ? emp.email : '',
       holidayFactor: Number.isFinite(holidayFactor) ? holidayFactor : 0,
       dailyWorkHours: Number.isFinite(dailyWorkHours) ? dailyWorkHours : 0,
       groupId: emp.groupId && groups.some((g) => g.id === emp.groupId) ? emp.groupId : null,
@@ -407,7 +416,26 @@ function normalizeTickets(tickets = []) {
         priority,
         description: ticket.description || '',
         status,
+        reporterName: ticket.reporterName || 'Alois Reichsöllner',
+        reporterEmail: typeof ticket.reporterEmail === 'string' ? ticket.reporterEmail : '',
         createdAt: parseISODate(ticket.createdAt) ? ticket.createdAt : new Date().toISOString(),
+        updates: Array.isArray(ticket.updates)
+          ? ticket.updates
+              .map((entry) => {
+                if (!entry) return null;
+                return {
+                  id: entry.id || uuid(),
+                  note: typeof entry.note === 'string' ? entry.note : '',
+                  status: TICKET_STATUSES.includes(entry.status) ? entry.status : status,
+                  timestamp: parseISODate(entry.timestamp)
+                    ? entry.timestamp
+                    : new Date(entry.timestamp || Date.now()).toISOString(),
+                  notify: !!entry.notify,
+                };
+              })
+              .filter(Boolean)
+              .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+          : [],
       };
     })
     .filter(Boolean);
@@ -523,6 +551,7 @@ function ensureLogs(logs = DEFAULT_LOGS) {
         id: entry.id || uuid(),
         message: entry.message,
         timestamp: Number(entry.timestamp) || Date.now(),
+        entityId: entry.entityId || null,
       }))
       .sort((a, b) => b.timestamp - a.timestamp)
       .slice(0, 200);
@@ -1943,15 +1972,52 @@ function renderTickets() {
   ticketList.innerHTML = tickets
     .map((ticket) => {
       const created = new Date(ticket.createdAt).toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' });
+      const updateList = (ticket.updates || [])
+        .map(
+          (entry) => `
+            <li>
+              <small>${new Date(entry.timestamp).toLocaleString('de-AT', {
+                dateStyle: 'short',
+                timeStyle: 'short',
+              })} · ${entry.status}${entry.notify ? ' · Benachrichtigung' : ''}</small>
+              <p>${escapeHtml(entry.note || 'Aktualisiert')}</p>
+            </li>`
+        )
+        .join('');
+      const statusOptions = TICKET_STATUSES.map(
+        (status) => `<option value="${status}" ${ticket.status === status ? 'selected' : ''}>${status}</option>`
+      ).join('');
       return `
-        <article class="ticket-card">
+        <article class="ticket-card" data-ticket-id="${ticket.id}">
           <div class="ticket-meta">
             <span class="ticket-priority">${ticket.priority}</span>
             <span class="ticket-status">${ticket.status}</span>
           </div>
           <h3>${escapeHtml(ticket.name)}</h3>
           <p class="ticket-desc">${escapeHtml(ticket.description || 'Keine Beschreibung')}</p>
+          <p class="muted">Erstellt von ${escapeHtml(ticket.reporterName || 'Unbekannt')}${
+            ticket.reporterEmail ? ` (${escapeHtml(ticket.reporterEmail)})` : ''
+          }</p>
           <small class="muted">Erstellt: ${created}</small>
+          <div class="ticket-actions">
+            <label>Status
+              <select data-ticket-status="${ticket.id}">${statusOptions}</select>
+            </label>
+            <label class="full-width">Aktualisierung
+              <textarea rows="3" data-ticket-note="${ticket.id}" placeholder="Kommentar oder Fortschritt ergänzen"></textarea>
+            </label>
+            <label class="checkbox inline">
+              <input type="checkbox" data-ticket-notify="${ticket.id}"> Einmelder per Mail benachrichtigen
+            </label>
+            <div class="form-actions">
+              <button type="button" data-ticket-save="${ticket.id}">Speichern</button>
+              <button type="button" class="primary" data-ticket-send="${ticket.id}">Speichern &amp; senden</button>
+            </div>
+          </div>
+          <div>
+            <p class="muted">Aktivität</p>
+            <ul class="ticket-updates">${updateList || '<li class="muted">Noch keine Notizen vorhanden.</li>'}</ul>
+          </div>
         </article>`;
     })
     .join('');
@@ -1972,6 +2038,7 @@ function fillEmployeeForm(emp) {
   form.lastName.value = emp.lastName || '';
   form.personnelNumber.value = emp.personnelNumber || '';
   form.birthday.value = emp.birthday || '';
+  form.email.value = emp.email || '';
   form.employmentPercent.value = emp.employmentPercent || '';
   form.employmentHours.value = emp.employmentHours || '';
   form.functionId.value = emp.functionId || '';
@@ -2021,6 +2088,7 @@ function handleEmployeeForm(e) {
     lastName: data.get('lastName').trim(),
     personnelNumber: data.get('personnelNumber').trim(),
     birthday: data.get('birthday'),
+    email: data.get('email') || '',
     employmentPercent: data.get('employmentPercent'),
     employmentHours: data.get('employmentHours'),
     functionId: data.get('functionId'),
@@ -2810,11 +2878,34 @@ function generateRoster() {
     }
   });
 
+  const serviceCounts = new Map();
+  const assignmentCounts = new Map();
+  Object.entries(state.assignments[monthKey]).forEach(([empId, entries]) => {
+    Object.values(entries).forEach((serviceId) => {
+      const map = serviceCounts.get(empId) || {};
+      map[serviceId] = (map[serviceId] || 0) + 1;
+      serviceCounts.set(empId, map);
+      assignmentCounts.set(empId, (assignmentCounts.get(empId) || 0) + 1);
+    });
+  });
+
+  const getCounts = (empId, serviceId) => {
+    const serviceMap = serviceCounts.get(empId) || {};
+    return { service: serviceMap[serviceId] || 0, total: assignmentCounts.get(empId) || 0 };
+  };
+
+  const incrementCounts = (empId, serviceId) => {
+    const map = serviceCounts.get(empId) || {};
+    map[serviceId] = (map[serviceId] || 0) + 1;
+    serviceCounts.set(empId, map);
+    assignmentCounts.set(empId, (assignmentCounts.get(empId) || 0) + 1);
+  };
+
   for (let day = 1; day <= days; day++) {
     const currentDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
     const servicesForDay = getRequiredServicesForDate(currentDate);
     for (const service of servicesForDay) {
-      rotated
+      const candidates = rotated
         .filter((emp) => {
           if (!isEmployeeActiveOnDate(emp, currentDate)) return false;
           const func = state.functions.find((f) => f.id === emp.functionId);
@@ -2825,42 +2916,57 @@ function generateRoster() {
           if (isNightService(service) && !emp.nightAllowed) return false;
           return true;
         })
-        .some((emp) => {
-          ensureMonthMaps(monthKey);
+        .map((emp) => {
           const locked = state.locks[monthKey]?.[emp.id]?.[day];
-          if (locked) return false;
-          if (!state.assignments[monthKey][emp.id]) state.assignments[monthKey][emp.id] = {};
-          const already = state.assignments[monthKey][emp.id][day];
-          if (already) return false;
-          if (rules.restDays && workedRecently(emp.id, day, rules.restDays)) return false;
+          const existing = state.assignments[monthKey][emp.id]?.[day];
+          if (locked || existing) return null;
+          if (rules.restDays && workedRecently(emp.id, day, rules.restDays)) return null;
           if (isNightService(service) && !emp.doubleNights) {
             const prev = state.assignments[monthKey][emp.id][day - 1];
             if (prev) {
               const prevService = state.services.find((s) => s.id === prev);
-              if (isNightService(prevService)) return false;
+              if (isNightService(prevService)) return null;
             }
           }
           const targetHours = monthlyTargetHours(emp, currentMonth);
-          const nextHours = hoursForEmployee(monthKey, emp.id) + serviceDuration(service);
-          if (targetHours && nextHours > targetHours) return false;
+          const projectedHours = hoursForEmployee(monthKey, emp.id) + serviceDuration(service);
+          if (targetHours && projectedHours > targetHours + 20) return null;
           const nextNights = countNights(monthKey, emp.id) + (isNightService(service) ? 1 : 0);
-          if (rules.maxNights && nextNights > rules.maxNights) return false;
+          if (rules.maxNights && nextNights > rules.maxNights) return null;
           if (isWeekend(currentDate)) {
             const weekendKey = weekendKeyForDate(currentDate);
             const set = getWeekendSet(emp.id);
             if (weekendKey && !set.has(weekendKey) && set.size >= allowedWorkedWeekends) {
-              return false;
+              return null;
             }
           }
-          state.assignments[monthKey][emp.id][day] = service.id;
-          if (isWeekend(currentDate)) {
-            const weekendKey = weekendKeyForDate(currentDate);
-            if (weekendKey) {
-              getWeekendSet(emp.id).add(weekendKey);
-            }
-          }
-          return true;
+          const counts = getCounts(emp.id, service.id);
+          const diff = targetHours ? Math.abs(targetHours - projectedHours) : 0;
+          const overPenalty = targetHours && projectedHours > targetHours ? projectedHours - targetHours : 0;
+          const diversity = counts.service * 2 + counts.total * 0.5;
+          const score = diff + overPenalty * 2 + diversity;
+          return { emp, score, counts, projectedHours };
+        })
+        .filter(Boolean)
+        .sort((a, b) => {
+          if (a.score !== b.score) return a.score - b.score;
+          if (a.counts.service !== b.counts.service) return a.counts.service - b.counts.service;
+          return a.counts.total - b.counts.total;
         });
+
+      const choice = candidates[0];
+      if (choice) {
+        const { emp } = choice;
+        if (!state.assignments[monthKey][emp.id]) state.assignments[monthKey][emp.id] = {};
+        state.assignments[monthKey][emp.id][day] = service.id;
+        incrementCounts(emp.id, service.id);
+        if (isWeekend(currentDate)) {
+          const weekendKey = weekendKeyForDate(currentDate);
+          if (weekendKey) {
+            getWeekendSet(emp.id).add(weekendKey);
+          }
+        }
+      }
     }
   }
   const label = currentMonth.toLocaleDateString('de-AT', { month: 'long', year: 'numeric' });
@@ -2947,6 +3053,8 @@ function handleTicketSubmit(event) {
   const name = (ticketNameInput?.value || '').trim();
   const priority = ticketPriorityInput?.value || TICKET_PRIORITIES[1];
   const description = ticketDescriptionInput?.value || '';
+  const reporterName = (ticketReporterInput?.value || 'Alois Reichsöllner').trim();
+  const reporterEmail = (ticketReporterEmailInput?.value || '').trim();
   if (!name) return;
   const ticket = {
     id: uuid(),
@@ -2954,20 +3062,66 @@ function handleTicketSubmit(event) {
     priority: TICKET_PRIORITIES.includes(priority) ? priority : TICKET_PRIORITIES[1],
     description,
     status: TICKET_STATUSES[0],
+    reporterName: reporterName || 'Alois Reichsöllner',
+    reporterEmail,
     createdAt: new Date().toISOString(),
+    updates: [
+      {
+        id: uuid(),
+        status: TICKET_STATUSES[0],
+        note: 'Ticket erstellt',
+        timestamp: new Date().toISOString(),
+        notify: false,
+      },
+    ],
   };
   state.tickets = [ticket, ...(state.tickets || [])];
-  appendLog('rules', `Neues Ticket '${ticket.name}' erfasst.`);
+  appendLog('tickets', `Neues Ticket '${ticket.name}' erfasst.`, ticket.id);
   saveState();
   if (ticketForm) ticketForm.reset();
   if (ticketPriorityInput) ticketPriorityInput.value = 'mittel';
   if (ticketStatusFilter) ticketStatusFilter.value = 'all';
+  if (ticketReporterInput) ticketReporterInput.value = 'Alois Reichsöllner';
   renderTickets();
   showScreen('tickets');
 }
 
 function handleTicketFilterChange() {
   renderTickets();
+}
+
+function handleTicketCardAction(event) {
+  const button = event.target.closest('button[data-ticket-save], button[data-ticket-send]');
+  if (!button) return;
+  const ticketId = button.dataset.ticketSave || button.dataset.ticketSend;
+  const ticket = state.tickets.find((t) => t.id === ticketId);
+  if (!ticket) return;
+  const card = button.closest('[data-ticket-id]');
+  const statusSelect = card?.querySelector(`select[data-ticket-status="${ticketId}"]`);
+  const noteField = card?.querySelector(`textarea[data-ticket-note="${ticketId}"]`);
+  const notifyField = card?.querySelector(`input[data-ticket-notify="${ticketId}"]`);
+  const status = statusSelect && TICKET_STATUSES.includes(statusSelect.value) ? statusSelect.value : ticket.status;
+  const note = (noteField?.value || '').trim();
+  const notify = !!notifyField?.checked;
+  const entry = {
+    id: uuid(),
+    status,
+    note: note || (status !== ticket.status ? 'Status aktualisiert' : 'Aktualisiert'),
+    timestamp: new Date().toISOString(),
+    notify,
+  };
+  ticket.status = status;
+  ticket.updates = [entry, ...(ticket.updates || [])].slice(0, 100);
+  appendLog('tickets', `Ticket '${ticket.name}' auf '${status}' aktualisiert.`, ticket.id);
+  saveState();
+  if (noteField) noteField.value = '';
+  if (notifyField) notifyField.checked = false;
+  renderTickets();
+  if (button.dataset.ticketSend && notify && ticket.reporterEmail) {
+    alert(
+      `E-Mail an ${ticket.reporterName || 'Einmelder'} (${ticket.reporterEmail}):\n${ticket.name}\nStatus: ${status}\n${note || 'Kein zusätzlicher Text'}`
+    );
+  }
 }
 
 function wireEvents() {
@@ -3048,8 +3202,10 @@ function wireEvents() {
   if (ticketForm) ticketForm.addEventListener('submit', handleTicketSubmit);
   if (ticketForm) ticketForm.addEventListener('reset', () => {
     if (ticketPriorityInput) ticketPriorityInput.value = 'mittel';
+    if (ticketReporterInput) ticketReporterInput.value = 'Alois Reichsöllner';
   });
   if (ticketStatusFilter) ticketStatusFilter.addEventListener('change', handleTicketFilterChange);
+  if (ticketList) ticketList.addEventListener('click', handleTicketCardAction);
   syncEmploymentHours();
 }
 

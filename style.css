@@ -248,14 +248,15 @@ button.ghost { background: transparent; }
 }
 
 label { display: flex; flex-direction: column; gap: .3rem; font-size: .95rem; }
-input, select {
+input, select, textarea {
   background: #0b1224;
   border: 1px solid var(--border);
   color: var(--text);
   padding: .55rem .65rem;
   border-radius: .65rem;
 }
-input:focus, select:focus { outline: 2px solid #22d3ee55; border-color: #22d3ee; }
+input:focus, select:focus, textarea:focus { outline: 2px solid #22d3ee55; border-color: #22d3ee; }
+textarea { resize: vertical; font: inherit; }
 .checkbox { flex-direction: row; align-items: center; gap: .5rem; }
 
 .form-actions { grid-column: 1 / -1; display: flex; gap: .75rem; justify-content: flex-end; }
@@ -614,7 +615,6 @@ input:focus, select:focus { outline: 2px solid #22d3ee55; border-color: #22d3ee;
 
 .ticket-form textarea {
   width: 100%;
-  resize: vertical;
 }
 
 .ticket-form .full-width {
@@ -645,7 +645,7 @@ input:focus, select:focus { outline: 2px solid #22d3ee55; border-color: #22d3ee;
   background: rgba(15, 23, 42, 0.35);
   display: flex;
   flex-direction: column;
-  gap: .35rem;
+  gap: .5rem;
 }
 
 .light-theme .ticket-card {
@@ -680,6 +680,45 @@ input:focus, select:focus { outline: 2px solid #22d3ee55; border-color: #22d3ee;
 .ticket-desc {
   font-size: .95rem;
   color: var(--muted);
+  white-space: pre-line;
+}
+
+.ticket-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: .5rem;
+  align-items: end;
+}
+
+.ticket-actions .form-actions {
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+}
+
+.ticket-updates {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: .35rem;
+}
+
+.ticket-updates li {
+  border: 1px solid var(--border);
+  border-radius: .6rem;
+  padding: .5rem .65rem;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.ticket-updates small {
+  color: var(--muted);
+  display: block;
+  margin-bottom: .2rem;
+}
+
+.ticket-updates p {
+  margin: 0;
   white-space: pre-line;
 }
 

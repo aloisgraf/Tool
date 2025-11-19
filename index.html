@@ -119,6 +119,7 @@
             <label>Nachname<input name="lastName" required></label>
             <label>Personalnummer<input name="personnelNumber" required></label>
             <label>Geburtstag<input type="date" name="birthday" required></label>
+            <label>E-Mail-Adresse<input type="email" name="email" placeholder="beispiel@firma.at"></label>
             <label>Anstellung in %
               <select name="employmentPercent" id="employmentPercentSelect"></select>
             </label>
@@ -424,6 +425,12 @@
         </div>
         <div class="admin-panel">
           <form id="ticketForm" class="grid ticket-form">
+            <label>Ersteller*in
+              <input id="ticketReporter" name="ticketReporter" value="Alois Reichsöllner" readonly>
+            </label>
+            <label>E-Mail des Erstellers
+              <input id="ticketReporterEmail" name="ticketReporterEmail" type="email" placeholder="einmelder@beispiel.at" required>
+            </label>
             <label>Ticketname
               <input id="ticketName" name="ticketName" required placeholder="z.B. Drucker reparieren">
             </label>
@@ -464,6 +471,10 @@
         </div>
         <div class="admin-panel">
           <div id="ticketList" class="ticket-grid" aria-live="polite"></div>
+          <details class="log-panel">
+            <summary>Ticket-Log</summary>
+            <ul id="ticketLog" class="log-list"></ul>
+          </details>
         </div>
       </section>
     </div>
