@@ -10,6 +10,7 @@ const STORAGE_KEYS = {
   layout: 'dienstplan_layout',
   logs: 'dienstplan_logs',
   vacationLimits: 'dienstplan_vacation_limits',
+  tickets: 'dienstplan_tickets',
 };
 
 const STORAGE_FILE_NAME = 'dienstplan_daten.json';
@@ -171,6 +172,9 @@ const DEFAULT_RULES = {
   weekdayRules: [createWeekdayRule()],
 };
 
+const TICKET_STATUSES = ['Offen', 'in Bearbeitung', 'Zurückgestellt', 'Geschlossen'];
+const TICKET_PRIORITIES = ['hoch', 'mittel', 'gering'];
+
 const SALZBURG_HOLIDAYS = {
   // month-day: label
   '01-01': 'Neujahr',
@@ -261,13 +265,18 @@ const vacationLimitStart = document.getElementById('vacationLimitStart');
 const vacationLimitEnd = document.getElementById('vacationLimitEnd');
 const vacationLimitValue = document.getElementById('vacationLimitValue');
 const vacationLimitList = document.getElementById('vacationLimitList');
-const vacationChart = document.getElementById('vacationChart');
 const vacationDefaultInput = document.getElementById('vacationDefault');
 const weekdayRangeStart = document.getElementById('weekdayRangeStart');
 const weekdayRangeEnd = document.getElementById('weekdayRangeEnd');
 const weekdayHistory = document.getElementById('weekdayHistory');
 const menuEmployeeAlert = document.getElementById('menuEmployeeAlert');
 const openSickIndicator = document.getElementById('openSickIndicator');
+const ticketForm = document.getElementById('ticketForm');
+const ticketNameInput = document.getElementById('ticketName');
+const ticketPriorityInput = document.getElementById('ticketPriority');
+const ticketDescriptionInput = document.getElementById('ticketDescription');
+const ticketStatusFilter = document.getElementById('ticketStatusFilter');
+const ticketList = document.getElementById('ticketList');
 const logElements = {
   roster: document.getElementById('rosterLog'),
 };
@@ -308,6 +317,7 @@ function loadState() {
   const layout = ensureLayout(loadValue(STORAGE_KEYS.layout, null), employees);
   const logs = ensureLogs(loadValue(STORAGE_KEYS.logs, DEFAULT_LOGS));
   const vacationLimits = normalizeVacationLimits(loadValue(STORAGE_KEYS.vacationLimits, []));
+  const tickets = normalizeTickets(loadArray(STORAGE_KEYS.tickets, []));
   cleanEmployeeGroups(employees, sanitizedGroups);
   return {
     employment,
@@ -321,6 +331,7 @@ function loadState() {
     layout,
     logs,
     vacationLimits,
+    tickets,
   };
 }
 
@@ -381,6 +392,25 @@ function normalizeEmployees(employees = [], groups = []) {
     };
     return normalized;
   });
+}
+
+function normalizeTickets(tickets = []) {
+  if (!Array.isArray(tickets)) return [];
+  return tickets
+    .map((ticket) => {
+      if (!ticket || !ticket.name) return null;
+      const status = TICKET_STATUSES.includes(ticket.status) ? ticket.status : TICKET_STATUSES[0];
+      const priority = TICKET_PRIORITIES.includes(ticket.priority) ? ticket.priority : TICKET_PRIORITIES[1];
+      return {
+        id: ticket.id || uuid(),
+        name: ticket.name,
+        priority,
+        description: ticket.description || '',
+        status,
+        createdAt: parseISODate(ticket.createdAt) ? ticket.createdAt : new Date().toISOString(),
+      };
+    })
+    .filter(Boolean);
 }
 
 function sanitizeDateValue(value) {
@@ -585,6 +615,7 @@ function saveState() {
     [STORAGE_KEYS.layout]: state.layout,
     [STORAGE_KEYS.logs]: state.logs,
     [STORAGE_KEYS.vacationLimits]: state.vacationLimits,
+    [STORAGE_KEYS.tickets]: state.tickets,
   };
 
   Object.entries(storageEntries).forEach(([key, value]) => {
@@ -619,6 +650,7 @@ function importState(json) {
     rules.vacationDefault = Number.isFinite(Number(rules.vacationDefault))
       ? Number(rules.vacationDefault)
       : DEFAULT_RULES.vacationDefault;
+    const tickets = normalizeTickets(parsed.tickets ?? []);
     state = {
       employees,
       services,
@@ -631,6 +663,7 @@ function importState(json) {
       layout: ensureLayout(parsed.layout, employees),
       logs: ensureLogs(parsed.logs ?? DEFAULT_LOGS),
       vacationLimits: normalizeVacationLimits(parsed.vacationLimits),
+      tickets,
     };
     weekdaySelections = ensureWeekdaySelections(currentWeekdayRule()?.services || {}, state.services);
     cleanEmployeeGroups(state.employees, state.groups);
@@ -1825,7 +1858,6 @@ function renderLegend() {
 
 function renderVacationMonitor() {
   renderVacationLimitList();
-  renderVacationChart();
   if (vacationLimitStart && !vacationLimitStart.value) {
     vacationLimitStart.value = formatISODate(currentMonth);
   }
@@ -1858,34 +1890,6 @@ function renderVacationLimitList() {
         </div>`;
     })
     .join('');
-}
-
-function renderVacationChart() {
-  if (!vacationChart) return;
-  const days = daysInMonth(currentMonth);
-  if (!state.employees.length) {
-    vacationChart.innerHTML = '<p class="muted">Keine Mitarbeiter vorhanden.</p>';
-    return;
-  }
-  const items = [];
-  for (let day = 1; day <= days; day++) {
-    const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
-    const count = countVacationsOnDate(date);
-    const limit = getVacationLimitForDate(date);
-    const width = limit ? Math.min((count / limit) * 100, 100) : Math.min(count * 25, 100);
-    const classes = ['vacation-day'];
-    if (limit && count >= limit) classes.push('limit-hit');
-    const label = date.toLocaleDateString('de-AT', { weekday: 'short' });
-    const status = limit ? `${count}/${limit} Personen` : `${count} Personen`;
-    items.push(`
-      <div class="${classes.join(' ')}">
-        <strong>${day}.</strong>
-        <span>${label}</span>
-        <div class="vacation-bar"><span style="width:${width}%"></span></div>
-        <small>${status}</small>
-      </div>`);
-  }
-  vacationChart.innerHTML = items.join('');
 }
 
 function renderOpenSickList() {
@@ -1921,6 +1925,34 @@ function renderOpenSickList() {
           <small>${range} · ${meta.name} (${days} Tag${days === 1 ? '' : 'e'})</small>
           ${renderSickStatus(entry)}
         </div>`;
+    })
+    .join('');
+}
+
+function renderTickets() {
+  if (!ticketList) return;
+  const filter = ticketStatusFilter?.value || 'all';
+  const tickets = (state.tickets || [])
+    .slice()
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .filter((ticket) => filter === 'all' || ticket.status === filter);
+  if (!tickets.length) {
+    ticketList.innerHTML = '<p class="muted">Noch keine Tickets vorhanden.</p>';
+    return;
+  }
+  ticketList.innerHTML = tickets
+    .map((ticket) => {
+      const created = new Date(ticket.createdAt).toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' });
+      return `
+        <article class="ticket-card">
+          <div class="ticket-meta">
+            <span class="ticket-priority">${ticket.priority}</span>
+            <span class="ticket-status">${ticket.status}</span>
+          </div>
+          <h3>${escapeHtml(ticket.name)}</h3>
+          <p class="ticket-desc">${escapeHtml(ticket.description || 'Keine Beschreibung')}</p>
+          <small class="muted">Erstellt: ${created}</small>
+        </article>`;
     })
     .join('');
 }
@@ -2172,8 +2204,8 @@ function showScreen(target) {
   });
   if (target === 'roster') {
     renderRoster();
-  } else if (target === 'vacationOverview') {
-    renderVacationMonitor();
+  } else if (target === 'tickets') {
+    renderTickets();
   }
 }
 
@@ -2910,6 +2942,34 @@ function handleEmploymentPickerChange() {
   }
 }
 
+function handleTicketSubmit(event) {
+  event.preventDefault();
+  const name = (ticketNameInput?.value || '').trim();
+  const priority = ticketPriorityInput?.value || TICKET_PRIORITIES[1];
+  const description = ticketDescriptionInput?.value || '';
+  if (!name) return;
+  const ticket = {
+    id: uuid(),
+    name,
+    priority: TICKET_PRIORITIES.includes(priority) ? priority : TICKET_PRIORITIES[1],
+    description,
+    status: TICKET_STATUSES[0],
+    createdAt: new Date().toISOString(),
+  };
+  state.tickets = [ticket, ...(state.tickets || [])];
+  appendLog('rules', `Neues Ticket '${ticket.name}' erfasst.`);
+  saveState();
+  if (ticketForm) ticketForm.reset();
+  if (ticketPriorityInput) ticketPriorityInput.value = 'mittel';
+  if (ticketStatusFilter) ticketStatusFilter.value = 'all';
+  renderTickets();
+  showScreen('tickets');
+}
+
+function handleTicketFilterChange() {
+  renderTickets();
+}
+
 function wireEvents() {
   menuButtons.forEach((btn) => btn.addEventListener('click', () => showScreen(btn.dataset.target)));
   employeeForm.addEventListener('submit', handleEmployeeForm);
@@ -2985,6 +3045,11 @@ function wireEvents() {
   if (assignGroupBtn) assignGroupBtn.addEventListener('click', handleAssignGroup);
   if (removeGroupBtn) removeGroupBtn.addEventListener('click', handleRemoveGroup);
   if (groupSelect) groupSelect.addEventListener('change', updateRowToolStates);
+  if (ticketForm) ticketForm.addEventListener('submit', handleTicketSubmit);
+  if (ticketForm) ticketForm.addEventListener('reset', () => {
+    if (ticketPriorityInput) ticketPriorityInput.value = 'mittel';
+  });
+  if (ticketStatusFilter) ticketStatusFilter.addEventListener('change', handleTicketFilterChange);
   syncEmploymentHours();
 }
 
@@ -3012,6 +3077,7 @@ function init() {
   renderRoster();
   renderLogs();
   updateVacationReasonVisibility();
+  renderTickets();
   wireEvents();
 }
 

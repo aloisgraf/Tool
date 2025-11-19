@@ -59,6 +59,18 @@
           </div>
         </div>
       </details>
+      <details class="menu-accordion" open>
+        <summary>
+          <span class="menu-icon" aria-hidden="true">🎟️</span>
+          <span>Tickets</span>
+        </summary>
+        <div class="menu-accordion__body">
+          <div class="menu-group__items">
+            <button type="button" data-target="ticketCreate">Ticket erstellen</button>
+            <button type="button" data-target="tickets">Tickets</button>
+          </div>
+        </div>
+      </details>
     </nav>
 
     <div class="content-area">
@@ -86,13 +98,6 @@
           <table id="rosterTable" aria-describedby="monthLabel"></table>
         </div>
         <div id="serviceLegend" class="service-legend"></div>
-        <section class="overview-block roster-vacations">
-          <div class="overview-header">
-            <p class="eyebrow">Urlaubsbelegung</p>
-            <h3>Auslastung pro Tag</h3>
-          </div>
-          <div id="vacationChart" class="vacation-chart" aria-live="polite"></div>
-        </section>
         <details class="log-panel">
           <summary>Log anzeigen</summary>
           <ul id="rosterLog" class="log-list"></ul>
@@ -411,6 +416,54 @@
             </form>
             <div class="list" id="vacationLimitList" aria-live="polite"></div>
           </section>
+        </div>
+      </section>
+      <section class="panel admin" data-screen="ticketCreate" hidden>
+        <div class="panel__header">
+          <h2>Ticket erstellen</h2>
+        </div>
+        <div class="admin-panel">
+          <form id="ticketForm" class="grid ticket-form">
+            <label>Ticketname
+              <input id="ticketName" name="ticketName" required placeholder="z.B. Drucker reparieren">
+            </label>
+            <label>Dringlichkeit
+              <select id="ticketPriority" name="ticketPriority">
+                <option value="hoch">Hoch</option>
+                <option value="mittel" selected>Mittel</option>
+                <option value="gering">Gering</option>
+              </select>
+            </label>
+            <label class="full-width">Ticketbeschreibung
+              <textarea id="ticketDescription" name="ticketDescription" rows="6" placeholder="Beschreibe das Anliegen"></textarea>
+            </label>
+            <div class="form-actions">
+              <button type="submit" class="primary">Speichern</button>
+              <button type="reset" class="ghost">Felder leeren</button>
+            </div>
+          </form>
+        </div>
+      </section>
+      <section class="panel admin" data-screen="tickets" hidden>
+        <div class="panel__header">
+          <div>
+            <p class="eyebrow">Tickets</p>
+            <h2>Übersicht</h2>
+          </div>
+          <div class="filter-row">
+            <label>Status filtern
+              <select id="ticketStatusFilter">
+                <option value="all">Alle</option>
+                <option value="Offen">Offen</option>
+                <option value="in Bearbeitung">in Bearbeitung</option>
+                <option value="Zurückgestellt">Zurückgestellt</option>
+                <option value="Geschlossen">Geschlossen</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div class="admin-panel">
+          <div id="ticketList" class="ticket-grid" aria-live="polite"></div>
         </div>
       </section>
     </div>
