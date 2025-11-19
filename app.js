@@ -325,32 +325,29 @@ function loadState() {
 }
 
 function loadArray(key, fallback) {
-  const raw = localStorage.getItem(key);
-  if (!raw) {
-    localStorage.setItem(key, JSON.stringify(fallback));
-    return clone(fallback);
-  }
-  try {
-    return JSON.parse(raw);
-  } catch (e) {
-    console.warn('Konnte Daten nicht laden, verwende Fallback', key, e);
-    localStorage.setItem(key, JSON.stringify(fallback));
-    return clone(fallback);
-  }
+  return loadFromStorage(key, fallback, Array.isArray);
 }
 
 function loadValue(key, fallback) {
+  return loadFromStorage(key, fallback);
+}
+
+function loadFromStorage(key, fallback, validate = () => true) {
+  const defaultValue = clone(fallback);
   const raw = localStorage.getItem(key);
   if (!raw) {
-    localStorage.setItem(key, JSON.stringify(fallback));
-    return clone(fallback);
+    localStorage.setItem(key, JSON.stringify(defaultValue));
+    return defaultValue;
   }
   try {
-    return JSON.parse(raw);
-  } catch (e) {
-    localStorage.setItem(key, JSON.stringify(fallback));
-    return clone(fallback);
+    const parsed = JSON.parse(raw);
+    if (validate(parsed)) return parsed;
+    console.warn('Ungültiges Format, verwende Fallback', key);
+  } catch (error) {
+    console.warn('Konnte Daten nicht laden, verwende Fallback', key, error);
   }
+  localStorage.setItem(key, JSON.stringify(defaultValue));
+  return defaultValue;
 }
 
 function sanitizeGroups(groups = []) {
@@ -576,17 +573,23 @@ function updateRowToolStates() {
 }
 
 function saveState() {
-  localStorage.setItem(STORAGE_KEYS.employees, JSON.stringify(state.employees));
-  localStorage.setItem(STORAGE_KEYS.services, JSON.stringify(state.services));
-  localStorage.setItem(STORAGE_KEYS.functions, JSON.stringify(state.functions));
-  localStorage.setItem(STORAGE_KEYS.employmentTypes, JSON.stringify(state.employment));
-  localStorage.setItem(STORAGE_KEYS.rules, JSON.stringify(state.rules));
-  localStorage.setItem(STORAGE_KEYS.assignments, JSON.stringify(state.assignments));
-  localStorage.setItem(STORAGE_KEYS.locks, JSON.stringify(state.locks));
-  localStorage.setItem(STORAGE_KEYS.groups, JSON.stringify(state.groups));
-  localStorage.setItem(STORAGE_KEYS.layout, JSON.stringify(state.layout));
-  localStorage.setItem(STORAGE_KEYS.logs, JSON.stringify(state.logs));
-  localStorage.setItem(STORAGE_KEYS.vacationLimits, JSON.stringify(state.vacationLimits));
+  const storageEntries = {
+    [STORAGE_KEYS.employees]: state.employees,
+    [STORAGE_KEYS.services]: state.services,
+    [STORAGE_KEYS.functions]: state.functions,
+    [STORAGE_KEYS.employmentTypes]: state.employment,
+    [STORAGE_KEYS.rules]: state.rules,
+    [STORAGE_KEYS.assignments]: state.assignments,
+    [STORAGE_KEYS.locks]: state.locks,
+    [STORAGE_KEYS.groups]: state.groups,
+    [STORAGE_KEYS.layout]: state.layout,
+    [STORAGE_KEYS.logs]: state.logs,
+    [STORAGE_KEYS.vacationLimits]: state.vacationLimits,
+  };
+
+  Object.entries(storageEntries).forEach(([key, value]) => {
+    localStorage.setItem(key, JSON.stringify(value));
+  });
 }
 
 function downloadStateFile() {
