@@ -2206,12 +2206,56 @@ function buildRosterHeader(date) {
   headerRows.forEach((row) => rosterTable.appendChild(row));
 }
 
+function buildVacationCalendarRow(date) {
+  const days = daysInMonth(date);
+  const tr = document.createElement('tr');
+  tr.className = 'vacation-calendar-row';
+  const labelCell = document.createElement('td');
+  labelCell.className = 'names col-info';
+  labelCell.colSpan = 2;
+  labelCell.innerHTML = `
+    <div class="vacation-calendar__label">
+      <strong>Urlaube</strong>
+      <small>pro Tag</small>
+    </div>
+  `;
+  tr.appendChild(labelCell);
+
+  for (let day = 1; day <= days; day++) {
+    const d = new Date(date.getFullYear(), date.getMonth(), day);
+    const cls = ['day-col', 'vacation-calendar__cell'];
+    if (isHoliday(d)) cls.push('holiday');
+    else if (d.getDay() === 0) cls.push('weekend');
+    else if (d.getDay() === 6) cls.push('saturday');
+    const count = countVacationsOnDate(d);
+    const limit = getVacationLimitForDate(d);
+    const width = limit ? Math.min((count / limit) * 100, 100) : Math.min(count * 25, 100);
+    const cell = document.createElement('td');
+    cell.className = cls.join(' ');
+    if (limit && count >= limit) {
+      cell.classList.add('vacation-limit-hit');
+    }
+    cell.innerHTML = `
+      <div class="vacation-meter" role="img" aria-label="${count} Urlaube${limit ? ` von ${limit}` : ''} am ${
+      d.toLocaleDateString('de-AT', { weekday: 'long' })
+    }">
+        <span style="width:${width}%"></span>
+        <small>${count}${limit ? `/${limit}` : ''}</small>
+      </div>
+    `;
+    tr.appendChild(cell);
+  }
+
+  return tr;
+}
+
 function renderRoster() {
   buildRosterHeader(currentMonth);
   const monthKey = getMonthKey(currentMonth);
   ensureMonthMaps(monthKey);
   const days = daysInMonth(currentMonth);
   cleanSelectedRows();
+  rosterTable.appendChild(buildVacationCalendarRow(currentMonth));
   const employees = getOrderedEmployees().filter((emp) => isEmployeeActiveInMonth(emp, currentMonth));
   const renderedGroups = new Set();
   let assignmentsCleaned = false;
