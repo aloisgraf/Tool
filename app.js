@@ -304,7 +304,7 @@ let currentTheme = localStorage.getItem(THEME_STORAGE_KEY) || 'dark';
 function loadState() {
   const employment = loadArray(STORAGE_KEYS.employmentTypes, DEFAULT_EMPLOYMENT);
   const services = loadArray(STORAGE_KEYS.services, DEFAULT_SERVICES);
-  const functions = loadArray(STORAGE_KEYS.functions, DEFAULT_FUNCTIONS(services));
+  const functions = normalizeFunctions(loadArray(STORAGE_KEYS.functions, DEFAULT_FUNCTIONS(services)), services);
   const employeesRaw = loadArray(STORAGE_KEYS.employees, DEFAULT_EMPLOYEES(employment, functions));
   const storedRules = loadValue(STORAGE_KEYS.rules, DEFAULT_RULES);
   const rules = {
@@ -375,6 +375,23 @@ function sanitizeGroups(groups = []) {
     .map((group) => {
       if (!group || !group.id) return null;
       return { id: group.id, name: group.name || 'Gruppe' };
+    })
+    .filter(Boolean);
+}
+
+function normalizeFunctions(functions = [], services = []) {
+  if (!Array.isArray(functions)) return [];
+  const serviceIds = new Set(services.map((s) => s.id));
+  return functions
+    .map((entry) => {
+      if (!entry || !entry.id) return null;
+      return {
+        id: entry.id,
+        name: entry.name || 'Funktion',
+        serviceIds: Array.isArray(entry.serviceIds)
+          ? entry.serviceIds.filter((id) => serviceIds.has(id))
+          : [],
+      };
     })
     .filter(Boolean);
 }
@@ -669,6 +686,7 @@ function importState(json) {
     const employees = normalizeEmployees(parsed.employees ?? [], parsedGroups);
     const services = parsed.services ?? [];
     const parsedRules = parsed.rules || {};
+    const functions = normalizeFunctions(parsed.functions ?? [], services);
     const rules = {
       ...DEFAULT_RULES,
       ...parsedRules,
@@ -683,7 +701,7 @@ function importState(json) {
     state = {
       employees,
       services,
-      functions: parsed.functions ?? [],
+      functions,
       employment: parsed.employment ?? [],
       rules,
       assignments: parsed.assignments ?? {},
@@ -1690,7 +1708,8 @@ function renderFunctions() {
   }
   functionList.innerHTML = state.functions
     .map((f) => {
-      const names = f.serviceIds.map((id) => state.services.find((s) => s.id === id)?.name || '').filter(Boolean).join(', ');
+      const ids = Array.isArray(f.serviceIds) ? f.serviceIds : [];
+      const names = ids.map((id) => state.services.find((s) => s.id === id)?.name || '').filter(Boolean).join(', ');
       return `
         <div class="item">
           <div><strong>${f.name}</strong><br><small>Dienste: ${names || 'Keine'}</small></div>
@@ -2063,8 +2082,9 @@ function fillServiceForm(service) {
 function fillFunctionForm(func) {
   const form = functionForm.elements;
   form.name.value = func.name || '';
+  const selectedIds = Array.isArray(func.serviceIds) ? func.serviceIds : [];
   Array.from(functionServices.options).forEach((opt) => {
-    opt.selected = func.serviceIds?.includes(opt.value);
+    opt.selected = selectedIds.includes(opt.value);
   });
 }
 
