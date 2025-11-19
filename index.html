@@ -76,9 +76,13 @@
     <div class="content-area">
       <section class="panel roster-panel" data-screen="roster">
         <div class="panel__header roster-header">
-          <div>
+          <div class="roster-heading">
             <p class="eyebrow">Monatsraster</p>
-            <h2 id="monthLabel"></h2>
+            <div class="month-display">
+              <button type="button" id="prevMonth" class="ghost" aria-label="Vorheriger Monat">◀</button>
+              <h2 id="monthLabel"></h2>
+              <button type="button" id="nextMonth" class="ghost" aria-label="Nächster Monat">▶</button>
+            </div>
             <p class="muted">Navigation mit Pfeiltasten ←/→ möglich. Samstage sind hellgrau, Sonntage dunkelgrau, Feiertage in Salzburg gelb.</p>
           </div>
           <div class="actions">
@@ -86,10 +90,7 @@
               <button type="button" class="ghost active" data-roster-mode="edit">Dienstplan bearbeiten</button>
               <button type="button" class="ghost" data-roster-mode="view">Dienstplan Ansicht</button>
             </div>
-            <div class="month-controls">
-              <button type="button" id="prevMonth" class="ghost">◀</button>
-              <button type="button" id="nextMonth" class="ghost">▶</button>
-            </div>
+            <div class="action-spacer"></div>
             <button id="generatePlan" type="button" class="primary">Dienstplan generieren</button>
             <button id="printPlan" type="button" class="ghost">Dienstplan drucken</button>
           </div>
@@ -131,8 +132,8 @@
             </label>
             <label>Eintrittsdatum<input type="date" name="hireDate"></label>
             <label>Austrittsdatum<input type="date" name="endDate"></label>
-            <label>Durchrechnungsfaktor<input type="number" name="holidayFactor" min="0" step="0.25" value="0"></label>
-            <label>Tägliche Sollarbeitszeit<input type="number" name="dailyWorkHours" min="0" step="0.25" value="0"></label>
+            <label>Durchrechnungsfaktor<input type="text" name="holidayFactor" inputmode="decimal" value="0"></label>
+            <label>Tägliche Sollarbeitszeit<input type="text" name="dailyWorkHours" inputmode="decimal" value="0"></label>
             <label>Urlaubstage pro Jahr<input type="number" name="vacationDays" min="0" step="1" required></label>
             <label class="checkbox">
               <input type="checkbox" name="nightAllowed"> Nachtdienst Ja/Nein
@@ -145,6 +146,7 @@
             </label>
             <div class="form-actions">
               <button type="submit" class="primary">Speichern</button>
+              <button type="button" id="employeeExitBtn" class="ghost danger">Ausscheiden</button>
               <button type="reset" class="ghost">Felder leeren</button>
             </div>
           </form>
@@ -479,6 +481,8 @@
       </section>
     </div>
   </main>
+
+  <div id="notificationStack" class="toast-stack" aria-live="polite"></div>
 
   <script src="app.js"></script>
 </body>

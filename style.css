@@ -93,6 +93,7 @@ body {
   flex-wrap: wrap;
   justify-content: flex-end;
 }
+.actions .action-spacer { width: 1.5rem; height: 1px; }
 button {
   border: 1px solid var(--border);
   background: var(--pill);
@@ -352,7 +353,9 @@ textarea { resize: vertical; font: inherit; }
 }
 .light-theme .list .item { background: #f8fafc; }
 .employee-card__header { display: flex; flex-direction: column; gap: .2rem; }
+.employee-card__title-row { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
 .employee-card__meta { font-size: .85rem; color: var(--muted); }
+.employee-section { display: flex; flex-direction: column; gap: .5rem; margin-bottom: 1rem; }
 .card-details { border-top: 1px solid var(--border); padding-top: .65rem; display: flex; flex-direction: column; gap: .5rem; }
 .card-details details,
 .list .item > details { border: 1px solid rgba(148, 163, 184, 0.3); border-radius: .75rem; padding: .5rem .75rem; background: rgba(10, 15, 27, 0.9); }
@@ -694,6 +697,19 @@ textarea { resize: vertical; font: inherit; }
   grid-column: 1 / -1;
   justify-content: flex-start;
 }
+.form-actions .danger { border-color: #be123c; color: #fca5a5; }
+.form-actions .danger:hover { background: rgba(190, 18, 60, 0.15); }
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  padding: .2rem .6rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: .85rem;
+  background: rgba(255, 255, 255, 0.04);
+}
+.status-pill.danger { color: #fca5a5; border-color: #be123c; }
 
 .ticket-updates {
   list-style: none;
@@ -738,6 +754,36 @@ textarea { resize: vertical; font: inherit; }
   background: #0b1224;
   padding: .5rem 1rem;
 }
+
+.toast-stack {
+  position: fixed;
+  right: 1.5rem;
+  bottom: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  z-index: 999;
+  pointer-events: none;
+}
+
+.toast {
+  min-width: 220px;
+  background: rgba(15, 23, 42, 0.9);
+  color: #e2e8f0;
+  border-radius: .75rem;
+  padding: .75rem 1rem;
+  border: 1px solid var(--border);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  font-weight: 600;
+  pointer-events: auto;
+}
+
+.toast.success { border-color: #16a34a; color: #bbf7d0; }
+.toast.error { border-color: #dc2626; color: #fecdd3; }
+
+.light-theme .toast { background: rgba(255, 255, 255, 0.95); color: #0f172a; }
+.light-theme .toast.success { border-color: #16a34a; color: #166534; }
+.light-theme .toast.error { border-color: #dc2626; color: #991b1b; }
 .log-panel summary {
   list-style: none;
   cursor: pointer;
@@ -781,7 +827,13 @@ textarea { resize: vertical; font: inherit; }
 
 .muted { color: var(--muted); margin: 0; }
 .roster-header { align-items: flex-start; gap: .75rem; }
+.roster-heading { display: flex; flex-direction: column; gap: .35rem; }
+.month-display { display: inline-flex; align-items: center; gap: .5rem; }
+.month-display h2 { margin: 0; }
+.mode-toggle { gap: .35rem; }
+.actions { align-items: flex-start; }
 .month-controls { display: flex; gap: .5rem; }
+.generate-actions { display: flex; gap: .75rem; }
 .service-legend {
   display: flex;
   flex-wrap: wrap;
