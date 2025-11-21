@@ -15,6 +15,7 @@ const STORAGE_KEYS = {
 
 const STORAGE_FILE_NAME = 'dienstplan_daten.json';
 const THEME_STORAGE_KEY = 'dienstplan_theme';
+const AREAS = ['Technik', 'Leitung', 'Ausbildung'];
 
 const USERS = {
   '05475': { password: '1234', name: 'Admin', permissions: { roster: 'write', tickets: 'edit', admin: true } },
@@ -342,12 +343,20 @@ const ticketPriorityInput = document.getElementById('ticketPriority');
 const ticketDescriptionInput = document.getElementById('ticketDescription');
 const ticketReporterInput = document.getElementById('ticketReporter');
 const ticketReporterEmailInput = document.getElementById('ticketReporterEmail');
+const ticketAreaInput = document.getElementById('ticketArea');
 const ticketStatusFilter = document.getElementById('ticketStatusFilter');
 const ticketList = document.getElementById('ticketList');
 const rulesLog = document.getElementById('rulesLog');
+const employmentLog = document.getElementById('employmentLog');
+const servicesLog = document.getElementById('servicesLog');
+const functionsLog = document.getElementById('functionsLog');
+const employeeAreasSelect = document.getElementById('employeeAreas');
 const logElements = {
   roster: document.getElementById('rosterLog'),
   rules: rulesLog,
+  employment: employmentLog,
+  services: servicesLog,
+  functions: functionsLog,
 };
 
 let state = loadState();
@@ -369,6 +378,65 @@ function loadState() {
   const services = loadArray(STORAGE_KEYS.services, DEFAULT_SERVICES);
   const functions = normalizeFunctions(loadArray(STORAGE_KEYS.functions, DEFAULT_FUNCTIONS(services)), services);
   const employeesRaw = loadArray(STORAGE_KEYS.employees, DEFAULT_EMPLOYEES(employment, functions));
+  const normalizeEmployeeEntry = (emp) => {
+    const areas = Array.isArray(emp.areas) ? emp.areas.filter((a) => AREAS.includes(a)) : [];
+    return {
+      ...emp,
+      areas,
+      admin: !!emp.admin,
+      rosterPermission: emp.rosterPermission || 'write',
+      ticketPermission: emp.ticketPermission || 'edit',
+    };
+  };
+  const employeesWithDefaults = employeesRaw.map(normalizeEmployeeEntry);
+  const ensureTestUser = (personnelNumber, extra = {}) => {
+    if (employeesWithDefaults.some((e) => e.personnelNumber === personnelNumber)) return;
+    employeesWithDefaults.push(
+      normalizeEmployeeEntry({
+        id: uuid(),
+        firstName: extra.firstName || 'Test',
+        lastName: extra.lastName || personnelNumber,
+        personnelNumber,
+        email: extra.email || '',
+        birthday: '1990-01-01',
+        employmentPercent: employment[0]?.id,
+        employmentHours: employment[0]?.id,
+        functionId: functions[0]?.id,
+        vacationDays: 25,
+        vacations: [],
+        sickLeaves: [],
+        groupId: null,
+        nightAllowed: true,
+        rkt: false,
+        holidayFactor: 0,
+        dailyWorkHours: 8,
+        hireDate: '2023-01-01',
+        endDate: '',
+        doubleNights: false,
+        rosterPermission: extra.rosterPermission || 'write',
+        ticketPermission: extra.ticketPermission || 'edit',
+        status: 'active',
+        admin: !!extra.admin,
+        areas: extra.areas || AREAS,
+      })
+    );
+  };
+  ensureTestUser('05475', {
+    firstName: 'Alois',
+    lastName: 'Reichsöllner',
+    admin: true,
+    ticketPermission: 'edit',
+    rosterPermission: 'write',
+    areas: AREAS,
+  });
+  ensureTestUser('012345', {
+    firstName: 'Hans',
+    lastName: 'Maier',
+    rosterPermission: 'read',
+    ticketPermission: 'create',
+    admin: false,
+    areas: ['Technik', 'Ausbildung'],
+  });
   const storedRules = loadValue(STORAGE_KEYS.rules, DEFAULT_RULES);
   const rules = {
     ...DEFAULT_RULES,
@@ -390,7 +458,7 @@ function loadState() {
   const locks = loadValue(STORAGE_KEYS.locks, {});
   const groups = loadArray(STORAGE_KEYS.groups, []);
   const sanitizedGroups = sanitizeGroups(groups);
-  const employees = normalizeEmployees(employeesRaw, sanitizedGroups);
+  const employees = normalizeEmployees(employeesWithDefaults, sanitizedGroups);
   const layout = ensureLayout(loadValue(STORAGE_KEYS.layout, null), employees);
   const logs = ensureLogs(loadValue(STORAGE_KEYS.logs, DEFAULT_LOGS));
   const vacationLimits = normalizeVacationLimits(loadValue(STORAGE_KEYS.vacationLimits, []));
@@ -503,11 +571,13 @@ function normalizeTickets(tickets = []) {
       if (!ticket || !ticket.name) return null;
       const status = TICKET_STATUSES.includes(ticket.status) ? ticket.status : TICKET_STATUSES[0];
       const priority = TICKET_PRIORITIES.includes(ticket.priority) ? ticket.priority : TICKET_PRIORITIES[1];
+      const area = AREAS.includes(ticket.area) ? ticket.area : AREAS[0];
       return {
         id: ticket.id || uuid(),
         ticketNumber: ticket.ticketNumber || generateTicketNumber(),
         name: ticket.name,
         priority,
+        area,
         description: ticket.description || '',
         status,
         reporterName: ticket.reporterName || 'Alois Reichsöllner',
@@ -1292,18 +1362,24 @@ function hasBirthdayOnDate(emp, date) {
 function clearAssignmentsForRange(empId, startStr, endStr, options = {}) {
   const keepAssignments = !!options.keepAssignments;
   const keepLocks = !!options.keepLocks;
+  const trackEntry = options.trackEntry;
   const start = parseISODate(startStr);
   const end = parseISODate(endStr);
   if (!start || !end) return;
   const begin = start <= end ? start : end;
   const finish = start <= end ? end : start;
   const cursor = new Date(begin.getTime());
+  if (trackEntry && !trackEntry.clearedAssignments) trackEntry.clearedAssignments = {};
   while (cursor <= finish) {
     const monthKey = getMonthKey(cursor);
     const day = cursor.getDate();
     const monthAssignments = state.assignments[monthKey];
     const monthLocks = state.locks[monthKey];
     if (monthAssignments && monthAssignments[empId] && !keepAssignments) {
+      const serviceId = monthAssignments[empId][day];
+      if (serviceId && trackEntry) {
+        trackEntry.clearedAssignments[formatISODate(cursor)] = serviceId;
+      }
       delete monthAssignments[empId][day];
       if (!Object.keys(monthAssignments[empId]).length) {
         delete monthAssignments[empId];
@@ -1417,12 +1493,15 @@ function updateDropdowns() {
       .join('');
   const employeeOptions = state.employees
     .filter((e) => e.status !== 'exited')
-    .map((e) => `<option value="${e.id}">${e.lastName}, ${e.firstName}</option>`)
-    .join('');
+      .map((e) => `<option value="${e.id}">${e.lastName}, ${e.firstName}</option>`)
+      .join('');
   employeePicker.innerHTML = ['<option value="">Neu anlegen</option>', employeeOptions].join('');
   servicePicker.innerHTML = ['<option value="">Neu anlegen</option>']
     .concat(state.services.map((s) => `<option value="${s.id}">${s.name}</option>`))
     .join('');
+  if (employeeAreasSelect) {
+    employeeAreasSelect.innerHTML = AREAS.map((area) => `<option value="${area}">${area}</option>`).join('');
+  }
   functionPicker.innerHTML = ['<option value="">Neu anlegen</option>']
     .concat(state.functions.map((f) => `<option value="${f.id}">${f.name}${f.status === 'removed' ? ' (Entfernt)' : ''}</option>`))
     .join('');
@@ -1704,7 +1783,7 @@ function handleAddVacation() {
   const entry = { id: uuid(), start: ordered.start, end: ordered.end, type, reason: reasonValue };
   emp.vacations.push(entry);
   if (meta.clearsAssignments) {
-    clearAssignmentsForRange(emp.id, entry.start, entry.end);
+    clearAssignmentsForRange(emp.id, entry.start, entry.end, { trackEntry: entry });
   }
   appendLog('employees', `${meta.name} ${formatVacationRange(entry)} für ${formatName(emp)} gespeichert.`, emp.id);
   saveState();
@@ -1754,7 +1833,7 @@ function handleAddSick() {
   const entry = { id: uuid(), start: ordered.start, end: ordered.end, confirmed: false, kind };
   emp.sickLeaves.push(entry);
   if (meta.clearsAssignments) {
-    clearAssignmentsForRange(emp.id, entry.start, entry.end);
+    clearAssignmentsForRange(emp.id, entry.start, entry.end, { trackEntry: entry });
   }
   appendLog('employees', `${meta.name} ${formatVacationRange(entry)} für ${formatName(emp)} gespeichert.`, emp.id);
   saveState();
@@ -2248,12 +2327,19 @@ function renderTickets() {
   if (!ticketList) return;
   const editable = canManageTickets();
   const filter = ticketStatusFilter?.value || 'all';
+  const allowedAreas = currentUser?.permissions?.admin ? null : currentUser?.areas || [];
   const tickets = (state.tickets || [])
     .slice()
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   const matchesFilter = (ticket) => filter === 'all' || ticket.status === filter;
-  const openTickets = tickets.filter((t) => t.status !== 'Geschlossen' && matchesFilter(t));
-  const closedTickets = tickets.filter((t) => t.status === 'Geschlossen' && (filter === 'all' || filter === 'Geschlossen'));
+  const matchesArea = (ticket) =>
+    !allowedAreas || !allowedAreas.length || !ticket.area || allowedAreas.includes(ticket.area);
+  const openTickets = tickets.filter(
+    (t) => t.status !== 'Geschlossen' && matchesFilter(t) && matchesArea(t)
+  );
+  const closedTickets = tickets.filter(
+    (t) => t.status === 'Geschlossen' && (filter === 'all' || filter === 'Geschlossen') && matchesArea(t)
+  );
   if (!openTickets.length && !closedTickets.length) {
     ticketList.innerHTML = '<p class="muted">Noch keine Tickets vorhanden.</p>';
     return;
@@ -2305,6 +2391,7 @@ function renderTickets() {
                 ticket.reporterEmail ? ` (${escapeHtml(ticket.reporterEmail)})` : ''
               }</small>
               <small>Erstellt am ${created}</small>
+              <small>Bereich: ${escapeHtml(ticket.area || 'Allgemein')}</small>
               <small>Priorität: ${escapeHtml(ticket.priority)}</small>
               ${assigneeLabel}
               ${closedInfo}
@@ -2360,6 +2447,19 @@ function renderServiceChip(service, options = {}) {
   return `<span class="${classes.join(' ')}" title="${escapeHtml(tooltip)}">${service.name}</span>`;
 }
 
+function setMultiSelect(select, values = []) {
+  if (!select) return;
+  const valueSet = new Set(values);
+  Array.from(select.options).forEach((opt) => {
+    opt.selected = valueSet.has(opt.value);
+  });
+}
+
+function getMultiSelectValues(select) {
+  if (!select) return [];
+  return Array.from(select.selectedOptions).map((opt) => opt.value);
+}
+
 function fillEmployeeForm(emp) {
   const form = employeeForm.elements;
   form.firstName.value = emp.firstName || '';
@@ -2378,11 +2478,17 @@ function fillEmployeeForm(emp) {
   form.nightAllowed.checked = !!emp.nightAllowed;
   form.rkt.checked = !!emp.rkt;
   form.doubleNights.checked = !!emp.doubleNights;
+  if (employeeAreasSelect) {
+    setMultiSelect(employeeAreasSelect, Array.isArray(emp.areas) ? emp.areas : []);
+  }
   if (form.rosterPermission) {
     form.rosterPermission.value = emp.rosterPermission || 'write';
   }
   if (form.ticketPermission) {
     form.ticketPermission.value = emp.ticketPermission || 'edit';
+  }
+  if (form.admin) {
+    form.admin.checked = !!emp.admin;
   }
   if (employeeExitBtn) employeeExitBtn.disabled = emp.status === 'exited';
 }
@@ -2458,8 +2564,10 @@ function handleEmployeeForm(e) {
     nightAllowed: data.get('nightAllowed') === 'on',
     doubleNights: data.get('doubleNights') === 'on',
     rkt: data.get('rkt') === 'on',
+    areas: getMultiSelectValues(employeeAreasSelect),
     rosterPermission: data.get('rosterPermission') || existing?.rosterPermission || 'write',
     ticketPermission: data.get('ticketPermission') || existing?.ticketPermission || 'edit',
+    admin: data.get('admin') === 'on',
     status: existing?.status || 'active',
   };
 
@@ -2807,7 +2915,30 @@ function canManageTickets() {
 }
 
 function canCreateTickets() {
-  return !!currentUser && !!currentUser.permissions;
+  return (
+    !!currentUser &&
+    (currentUser.permissions?.admin ||
+      currentUser.permissions?.tickets === 'create' ||
+      currentUser.permissions?.tickets === 'edit')
+  );
+}
+
+function buildUserSession(userId, entry) {
+  const emp = state.employees.find((e) => e.personnelNumber === userId);
+  const basePermissions = { ...(entry?.permissions || {}) };
+  if (emp) {
+    basePermissions.roster = emp.rosterPermission === 'write' ? 'write' : 'read';
+    basePermissions.tickets = emp.ticketPermission === 'edit' ? 'edit' : 'create';
+    if (emp.admin) basePermissions.admin = true;
+  }
+  return {
+    id: userId,
+    ...entry,
+    name: emp ? formatName(emp) : entry?.name || userId,
+    permissions: basePermissions,
+    areas: emp?.areas || AREAS,
+    employeeEmail: emp?.email || '',
+  };
 }
 
 function applyPermissions() {
@@ -2819,6 +2950,16 @@ function applyPermissions() {
       ? `Angemeldet als ${currentUser.name || currentUser.id}`
       : 'Bitte einloggen.';
   const admin = !!currentUser?.permissions?.admin;
+  const editRoster = canEditRoster();
+  document.querySelectorAll('[data-permission]').forEach((el) => {
+    const gate = el.dataset.permission;
+    let allowed = loggedIn;
+    if (gate === 'admin') allowed = admin;
+    if (gate === 'roster-write') allowed = editRoster;
+    if (gate === 'tickets-edit') allowed = canManageTickets();
+    if (gate === 'tickets-create') allowed = canCreateTickets();
+    el.hidden = !allowed;
+  });
   const allowedScreens = admin ? null : new Set(['roster', 'ticketCreate', 'tickets']);
   menuButtons.forEach((btn) => {
     const allowed = loggedIn && (admin || allowedScreens.has(btn.dataset.target));
@@ -2836,13 +2977,12 @@ function applyPermissions() {
       el.disabled = !canCreateTickets();
     });
   }
-  const editRoster = canEditRoster();
   rosterModeButtons.forEach((btn) => {
     btn.disabled = !editRoster;
   });
   if (!editRoster) setRosterMode('view');
-  if (generateBtn) generateBtn.disabled = !editRoster;
-  if (clearBtn) clearBtn.disabled = !editRoster;
+  if (generateBtn) generateBtn.hidden = !editRoster;
+  if (clearBtn) clearBtn.hidden = !editRoster;
   if (printPlanBtn) printPlanBtn.disabled = !loggedIn;
   renderTickets();
   renderRoster();
@@ -2858,7 +2998,7 @@ function handleLogin(event) {
     showNotification('Fehler beim Login', 'error');
     return;
   }
-  currentUser = { id: userId, ...entry };
+  currentUser = buildUserSession(userId, entry);
   applyPermissions();
   showScreen('roster');
   showNotification('Login erfolgreich', 'success');
@@ -2869,6 +3009,19 @@ function handleLogout() {
   if (loginPassword) loginPassword.value = '';
   applyPermissions();
   showNotification('Abgemeldet', 'success');
+}
+
+function autoLoginDefaultUser() {
+  const defaultId = '05475';
+  const entry = USERS[defaultId];
+  if (!entry) return;
+  currentUser = buildUserSession(defaultId, entry);
+  if (loginUser) loginUser.value = defaultId;
+  if (loginPassword) loginPassword.value = entry.password;
+  if (ticketReporterInput) ticketReporterInput.value = currentUser.name || 'Alois Reichsöllner';
+  if (ticketReporterEmailInput && currentUser.employeeEmail) ticketReporterEmailInput.value = currentUser.employeeEmail;
+  applyPermissions();
+  showScreen('roster');
 }
 
 function showScreen(target) {
@@ -3170,6 +3323,11 @@ function buildEmployeeRow(emp, monthKey, days, markAssignmentsDirty) {
     const sickMeta = showSick ? SICK_TYPES[sickEntry.kind] || SICK_TYPES.sick : null;
     const showAbsence = showVacation || showSick;
     const service = serviceOptions.find((s) => s.id === assign) || state.services.find((s) => s.id === assign);
+    const dateKey = formatISODate(d);
+    const clearedServiceId =
+      (vacationEntry?.clearedAssignments && vacationEntry.clearedAssignments[dateKey]) ||
+      (sickEntry?.clearedAssignments && sickEntry.clearedAssignments[dateKey]);
+    const clearedService = clearedServiceId ? state.services.find((s) => s.id === clearedServiceId) : null;
     const showServiceWithAbsence =
       (showVacation && absenceMeta?.showService && service) || (showSick && sickMeta?.showService && service);
     if (showServiceWithAbsence) {
@@ -3186,6 +3344,9 @@ function buildEmployeeRow(emp, monthKey, days, markAssignmentsDirty) {
       parts.push(
         `<span class="absence-pill ${showVacation ? 'vacation' : 'sick'}" title="${title}">${label}</span>`
       );
+      if (clearedService) {
+        parts.push(`<span class="cleared-service">${renderServiceChip(clearedService, { strike: true })}</span>`);
+      }
     } else if (!canAssign) {
       parts.push('<span class="muted">-</span>');
     } else if (rosterMode === 'view') {
@@ -3863,6 +4024,7 @@ function handleTicketSubmit(event) {
   autoFillTicketReporterEmail(true);
   const name = (ticketNameInput?.value || '').trim();
   const priority = ticketPriorityInput?.value || TICKET_PRIORITIES[1];
+  const area = ticketAreaInput?.value || AREAS[0];
   const description = ticketDescriptionInput?.value || '';
   const reporterName = (ticketReporterInput?.value || 'Alois Reichsöllner').trim();
   const reporterEmail = (ticketReporterEmailInput?.value || '').trim();
@@ -3875,6 +4037,7 @@ function handleTicketSubmit(event) {
     ticketNumber: generateTicketNumber(),
     name,
     priority: TICKET_PRIORITIES.includes(priority) ? priority : TICKET_PRIORITIES[1],
+    area,
     description,
     status: TICKET_STATUSES[0],
     reporterName: reporterName || 'Alois Reichsöllner',
@@ -4073,6 +4236,7 @@ function wireEvents() {
     if (ticketPriorityInput) ticketPriorityInput.value = 'mittel';
     if (ticketReporterInput) ticketReporterInput.value = 'Alois Reichsöllner';
     autoFillTicketReporterEmail(true);
+    if (ticketAreaInput) ticketAreaInput.value = AREAS[0];
   });
   if (ticketStatusFilter) ticketStatusFilter.addEventListener('change', handleTicketFilterChange);
   if (ticketList) {
@@ -4110,6 +4274,7 @@ function init() {
   updateVacationReasonVisibility();
   renderTickets();
   wireEvents();
+  autoLoginDefaultUser();
   applyPermissions();
 }
 

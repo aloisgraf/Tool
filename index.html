@@ -62,7 +62,7 @@
               <button type="button" id="removeGroupBtn" class="ghost" disabled>Aus Gruppe lösen</button>
             </div>
           </div>
-          <div class="menu-file-actions" aria-label="Datenspeicherung">
+          <div class="menu-file-actions" aria-label="Datenspeicherung" data-permission="admin">
             <p class="eyebrow">Datenablage</p>
             <div class="file-actions__buttons">
               <button type="button" id="saveFile" class="ghost">Speichern als Datei</button>
@@ -104,8 +104,8 @@
               <button type="button" class="ghost" data-roster-mode="view">Dienstplan Ansicht</button>
             </div>
             <div class="action-spacer"></div>
-            <button id="clearPlan" type="button" class="ghost">Dienstplan leeren</button>
-            <button id="generatePlan" type="button" class="primary">Dienstplan generieren</button>
+            <button id="clearPlan" type="button" class="ghost" data-permission="roster-write">Dienstplan leeren</button>
+            <button id="generatePlan" type="button" class="primary" data-permission="roster-write">Dienstplan generieren</button>
             <button id="printPlan" type="button" class="ghost">Dienstplan drucken</button>
           </div>
         </div>
@@ -154,6 +154,9 @@
               <label>Durchrechnungsfaktor<input type="text" name="holidayFactor" inputmode="decimal" value="0"></label>
               <label>Tägliche Sollarbeitszeit<input type="text" name="dailyWorkHours" inputmode="decimal" value="0"></label>
             </div>
+            <label>Bereiche
+              <select name="areas" id="employeeAreas" multiple size="3"></select>
+            </label>
             <label>Urlaubstage pro Jahr<input type="number" name="vacationDays" min="0" step="1" required></label>
             <div class="stacked-checkboxes">
               <label class="checkbox">
@@ -166,16 +169,19 @@
                 <input type="checkbox" name="rkt"> RKT
               </label>
             </div>
-            <fieldset class="inline-fieldset radio-row">
-              <legend>Dienstplan-Rechte</legend>
-              <label class="radio"><input type="radio" name="rosterPermission" value="write"> Dienstplan schreiben</label>
-              <label class="radio"><input type="radio" name="rosterPermission" value="read"> Dienstplan lesen</label>
-            </fieldset>
-            <fieldset class="inline-fieldset radio-row">
-              <legend>Ticket-Rechte</legend>
-              <label class="radio"><input type="radio" name="ticketPermission" value="write"> Tickets schreiben</label>
-              <label class="radio"><input type="radio" name="ticketPermission" value="edit"> Tickets bearbeiten</label>
-            </fieldset>
+            <div class="permission-grid">
+              <fieldset class="radio-row">
+                <legend>Dienstplan-Rechte</legend>
+                <label class="radio"><input type="radio" name="rosterPermission" value="write"> Dienstplan schreiben</label>
+                <label class="radio"><input type="radio" name="rosterPermission" value="read"> Dienstplan lesen</label>
+              </fieldset>
+              <fieldset class="radio-row">
+                <legend>Ticket-Rechte</legend>
+                <label class="radio"><input type="radio" name="ticketPermission" value="write"> Tickets schreiben</label>
+                <label class="radio"><input type="radio" name="ticketPermission" value="edit"> Tickets bearbeiten</label>
+              </fieldset>
+            </div>
+            <label class="checkbox"><input type="checkbox" name="admin"> Admin</label>
             <div class="form-actions">
               <button type="submit" class="primary">Speichern</button>
               <button type="button" id="employeeExitBtn" class="ghost danger">Ausscheiden</button>
@@ -252,10 +258,8 @@
           </div>
           <form id="serviceForm" class="grid">
             <label>Dienstname<input name="name" required placeholder="z.B. NCN"></label>
-            <div class="inline-fieldset">
-              <label>Beginn<input type="time" name="start" required></label>
-              <label>Ende<input type="time" name="end" required></label>
-            </div>
+            <label>Beginn<input type="time" name="start" required></label>
+            <label>Ende<input type="time" name="end" required></label>
             <label class="checkbox"><input type="checkbox" name="isNight"> Nachtdienst</label>
             <div class="form-actions">
               <button type="submit" class="primary">Dienst speichern</button>
@@ -268,6 +272,16 @@
               <h3>Gespeicherte Dienste</h3>
             </div>
             <div class="list" id="serviceList" aria-live="polite"></div>
+          </section>
+          <section class="overview-block">
+            <div class="overview-header">
+              <p class="eyebrow">Protokoll</p>
+              <h3>Dienste-Log</h3>
+            </div>
+            <details class="log-panel" open>
+              <summary>Log anzeigen</summary>
+              <ul id="servicesLog" class="log-list"></ul>
+            </details>
           </section>
         </div>
       </section>
@@ -300,6 +314,16 @@
             </div>
             <div class="list" id="functionList" aria-live="polite"></div>
           </section>
+          <section class="overview-block">
+            <div class="overview-header">
+              <p class="eyebrow">Protokoll</p>
+              <h3>Funktionen-Log</h3>
+            </div>
+            <details class="log-panel" open>
+              <summary>Log anzeigen</summary>
+              <ul id="functionsLog" class="log-list"></ul>
+            </details>
+          </section>
         </div>
       </section>
 
@@ -327,6 +351,16 @@
               <h3>Gespeicherte Anstellungsverhältnisse</h3>
             </div>
             <div class="list" id="employmentList" aria-live="polite"></div>
+          </section>
+          <section class="overview-block">
+            <div class="overview-header">
+              <p class="eyebrow">Protokoll</p>
+              <h3>Anstellungsverhältnis-Log</h3>
+            </div>
+            <details class="log-panel" open>
+              <summary>Log anzeigen</summary>
+              <ul id="employmentLog" class="log-list"></ul>
+            </details>
           </section>
         </div>
       </section>
@@ -422,6 +456,27 @@
           </form>
           <section class="overview-block">
             <div class="overview-header">
+              <p class="eyebrow">Urlaubskapazitäten</p>
+              <h3>Ausnahmen verwalten</h3>
+            </div>
+              <form id="vacationLimitForm" class="vacation-limit-form">
+                <label>Datum von
+                  <input type="date" id="vacationLimitStart">
+                </label>
+                <label>Datum bis
+                  <input type="date" id="vacationLimitEnd">
+                </label>
+                <label>Max. Urlauber*innen
+                  <input type="number" id="vacationLimitValue" min="0" step="1">
+                </label>
+                <div class="form-actions">
+                  <button type="submit" class="ghost">Ausnahme speichern</button>
+                </div>
+              </form>
+              <div class="list" id="vacationLimitList" aria-live="polite"></div>
+            </section>
+          <section class="overview-block">
+            <div class="overview-header">
               <p class="eyebrow">Aktive Pflichtdienste</p>
               <h3>Historie</h3>
             </div>
@@ -439,32 +494,11 @@
             <p class="eyebrow">Protokoll</p>
             <h3>Regel-Log</h3>
           </div>
-          <details class="log-panel">
-            <summary>Logs anzeigen</summary>
+          <details class="log-panel" open>
+            <summary>Log anzeigen</summary>
             <ul id="rulesLog" class="log-list"></ul>
           </details>
         </section>
-        <section class="overview-block">
-          <div class="overview-header">
-            <p class="eyebrow">Urlaubskapazitäten</p>
-            <h3>Ausnahmen verwalten</h3>
-          </div>
-            <form id="vacationLimitForm" class="vacation-limit-form">
-              <label>Datum von
-                <input type="date" id="vacationLimitStart">
-              </label>
-              <label>Datum bis
-                <input type="date" id="vacationLimitEnd">
-              </label>
-              <label>Max. Urlauber*innen
-                <input type="number" id="vacationLimitValue" min="0" step="1">
-              </label>
-              <div class="form-actions">
-                <button type="submit" class="ghost">Ausnahme speichern</button>
-              </div>
-            </form>
-            <div class="list" id="vacationLimitList" aria-live="polite"></div>
-          </section>
         </div>
       </section>
       <section class="panel admin" data-screen="ticketCreate" hidden>
@@ -478,6 +512,13 @@
             </label>
             <label>E-Mail des Erstellers
               <input id="ticketReporterEmail" name="ticketReporterEmail" type="email" placeholder="einmelder@beispiel.at" required>
+            </label>
+            <label>Bereich
+              <select id="ticketArea" name="ticketArea">
+                <option value="Technik">Technik</option>
+                <option value="Leitung">Leitung</option>
+                <option value="Ausbildung">Ausbildung</option>
+              </select>
             </label>
             <label>Ticketname
               <input id="ticketName" name="ticketName" required placeholder="z.B. Drucker reparieren">

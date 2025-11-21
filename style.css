@@ -286,6 +286,21 @@ button.ghost { background: transparent; }
   gap: .65rem;
 }
 
+.permission-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: .75rem;
+}
+
+.permission-grid .radio-row {
+  border: 1px solid var(--border);
+  border-radius: .75rem;
+  padding: .5rem .75rem;
+  display: flex;
+  flex-direction: column;
+  gap: .35rem;
+}
+
 .inline-fieldset legend {
   padding: 0 .35rem;
   color: var(--muted);
@@ -627,6 +642,11 @@ textarea { resize: vertical; font: inherit; }
   color: #5eead4;
 }
 .service-chip.strike { text-decoration: line-through; opacity: .7; }
+.cleared-service .service-chip {
+  color: var(--error);
+  border-color: var(--error);
+  background: transparent;
+}
 
 .unassigned-row td.names { background: #0b1224; font-weight: 600; }
 .unassigned-cell { font-size: .85rem; }
