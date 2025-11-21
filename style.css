@@ -683,6 +683,10 @@ textarea { resize: vertical; font: inherit; }
   gap: .2rem;
 }
 
+.weekday-controls select[multiple] {
+  min-height: 8rem;
+}
+
 .ticket-form {
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
@@ -706,10 +710,28 @@ textarea { resize: vertical; font: inherit; }
   color: var(--muted);
 }
 
-.ticket-grid {
+.ticket-grid { display: flex; flex-direction: column; gap: 1.25rem; }
+
+.ticket-section {
+  display: block;
+}
+
+.ticket-section__grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 1rem;
+}
+
+.ticket-section.closed {
+  border: 1px dashed var(--border);
+  border-radius: .85rem;
+  padding: .5rem .75rem;
+}
+
+.ticket-section.closed summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 600;
 }
 
 .ticket-card {
@@ -778,6 +800,7 @@ textarea { resize: vertical; font: inherit; }
 }
 
 .ticket-actions .update-note { grid-column: span 2; }
+.ticket-actions textarea { min-height: 5rem; }
 
 .ticket-actions .form-actions {
   grid-column: 1 / -1;
@@ -833,6 +856,24 @@ textarea { resize: vertical; font: inherit; }
 .ticket-updates p {
   margin: 0;
   white-space: pre-line;
+}
+
+.ticket-activity {
+  border: 1px solid var(--border);
+  border-radius: .6rem;
+  padding: .5rem .75rem;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.ticket-activity summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--muted);
+  list-style: none;
+}
+
+.ticket-activity summary::-webkit-details-marker {
+  display: none;
 }
 
 .open-sick-item strong {

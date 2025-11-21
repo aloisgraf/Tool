@@ -323,10 +323,10 @@ const ticketReporterInput = document.getElementById('ticketReporter');
 const ticketReporterEmailInput = document.getElementById('ticketReporterEmail');
 const ticketStatusFilter = document.getElementById('ticketStatusFilter');
 const ticketList = document.getElementById('ticketList');
-const ticketLog = document.getElementById('ticketLog');
+const rulesLog = document.getElementById('rulesLog');
 const logElements = {
   roster: document.getElementById('rosterLog'),
-  tickets: ticketLog,
+  rules: rulesLog,
 };
 
 let state = loadState();
@@ -1378,7 +1378,8 @@ function updateDropdowns() {
       })
       .join('');
   const employeeOptions = state.employees
-    .map((e) => `<option value="${e.id}">${e.lastName}, ${e.firstName}${e.status === 'exited' ? ' (Ausgeschieden)' : ''}</option>`)
+    .filter((e) => e.status !== 'exited')
+    .map((e) => `<option value="${e.id}">${e.lastName}, ${e.firstName}</option>`)
     .join('');
   employeePicker.innerHTML = ['<option value="">Neu anlegen</option>', employeeOptions].join('');
   servicePicker.innerHTML = ['<option value="">Neu anlegen</option>']
@@ -1420,6 +1421,10 @@ function renderEmployees() {
     const hireInfo = emp.hireDate ? `Eintritt: ${formatShortDate(emp.hireDate)}` : 'Eintritt offen';
     const exitInfo = emp.endDate ? ` · Austritt: ${formatShortDate(emp.endDate)}` : '';
     const statusPill = emp.status === 'exited' ? '<span class="status-pill danger">Ausgeschieden</span>' : '';
+    const activateButton =
+      emp.status === 'exited'
+        ? `<div class="entry-actions"><button type="button" class="ghost" data-activate-employee="${emp.id}">Aktivieren</button></div>`
+        : '';
     return `
         <div class="item employee-card">
           <div class="employee-card__header">
@@ -1436,6 +1441,7 @@ function renderEmployees() {
             ${renderDetailsSection('Krankenstände', sickLeaves)}
             ${renderDetailsSection('Logs', logs)}
           </div>
+          ${activateButton}
         </div>`;
   };
 
@@ -1889,16 +1895,16 @@ function renderEmployment() {
 
 function renderWeekdaySelects() {
   weekdaySelects.forEach((select) => {
-    const previous = select.value;
+    const previous = Array.from(select.selectedOptions || []).map((opt) => opt.value);
     const options = state.services
       .map((s) => `<option value="${s.id}">${s.name} (${s.start}–${s.end})</option>`)
       .join('');
     select.innerHTML = '<option value="">Dienst auswählen…</option>' + options;
-    if (previous && state.services.some((s) => s.id === previous)) {
-      select.value = previous;
-    } else {
-      select.value = '';
-    }
+    select.value = '';
+    previous.forEach((val) => {
+      const option = select.querySelector(`option[value="${val}"]`);
+      if (option) option.selected = true;
+    });
   });
 }
 
@@ -1985,11 +1991,16 @@ function setupWeekdayInteractions() {
     if (addBtn && select) {
       addBtn.addEventListener('click', () => {
         const value = select.value;
-        if (!value) return;
+        const values = Array.from(select.selectedOptions || []).map((opt) => opt.value).filter(Boolean);
+        if (!value && !values.length) return;
         if (!weekdaySelections[weekday]) weekdaySelections[weekday] = [];
-        weekdaySelections[weekday].push(value);
+        if (values.length) {
+          weekdaySelections[weekday].push(...values);
+        } else {
+          weekdaySelections[weekday].push(value);
+        }
         renderWeekdayLists();
-        select.value = '';
+        select.selectedIndex = -1;
       });
     }
     if (list) {
@@ -2186,18 +2197,19 @@ function renderTickets() {
   const filter = ticketStatusFilter?.value || 'all';
   const tickets = (state.tickets || [])
     .slice()
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-    .filter((ticket) => filter === 'all' || ticket.status === filter);
-  if (!tickets.length) {
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const matchesFilter = (ticket) => filter === 'all' || ticket.status === filter;
+  const openTickets = tickets.filter((t) => t.status !== 'Geschlossen' && matchesFilter(t));
+  const closedTickets = tickets.filter((t) => t.status === 'Geschlossen' && (filter === 'all' || filter === 'Geschlossen'));
+  if (!openTickets.length && !closedTickets.length) {
     ticketList.innerHTML = '<p class="muted">Noch keine Tickets vorhanden.</p>';
     return;
   }
-  ticketList.innerHTML = tickets
-    .map((ticket) => {
-      const created = new Date(ticket.createdAt).toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' });
-      const updateList = (ticket.updates || [])
-        .map(
-          (entry) => `
+  const renderCard = (ticket) => {
+    const created = new Date(ticket.createdAt).toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' });
+    const updateList = (ticket.updates || [])
+      .map(
+        (entry) => `
             <li>
               <small>${new Date(entry.timestamp).toLocaleString('de-AT', {
                 dateStyle: 'short',
@@ -2205,15 +2217,25 @@ function renderTickets() {
               })} · ${entry.status}${entry.notify ? ' · Benachrichtigung' : ''}</small>
               <p>${escapeHtml(entry.note || 'Aktualisiert')}</p>
             </li>`
-        )
-        .join('');
-      const statusOptions = TICKET_STATUSES.map(
-        (status) => `<option value="${status}" ${ticket.status === status ? 'selected' : ''}>${status}</option>`
-      ).join('');
-      const priorityIcon = ticketPriorityIcon(ticket.priority);
-      const closedIcon = ticket.status === 'Geschlossen' ? '<span class="status-icon success">✔</span>' : '';
-      const assignee = ticket.assignee ? `<small>Bearbeiter: ${escapeHtml(ticket.assignee)}</small>` : '';
-      return `
+      )
+      .join('');
+    const statusOptions = TICKET_STATUSES.map(
+      (status) => `<option value="${status}" ${ticket.status === status ? 'selected' : ''}>${status}</option>`
+    ).join('');
+    const priorityIcon = ticketPriorityIcon(ticket.priority);
+    const closedIcon = ticket.status === 'Geschlossen' ? '<span class="status-icon success">✔</span>' : '';
+    const assigneeLabel = ticket.assignee
+      ? `<small>Bearbeiter: ${escapeHtml(ticket.assignee)}${
+          ticket.assignedAt ? ` · ${new Date(ticket.assignedAt).toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' })}` : ''
+        }</small>`
+      : '';
+    const closedInfo = ticket.closedAt
+      ? `<small>Abgeschlossen am ${new Date(ticket.closedAt).toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' })}</small>`
+      : '';
+    const activity = `<details class="ticket-activity"><summary>Aktivität (${ticket.updates?.length || 0})</summary><ul class="ticket-updates">${
+      updateList || '<li class="muted">Noch keine Notizen vorhanden.</li>'
+    }</ul></details>`;
+    return `
         <article class="ticket-card" data-ticket-id="${ticket.id}">
           <div class="ticket-header">
             <div class="ticket-title-row">
@@ -2231,7 +2253,8 @@ function renderTickets() {
               }</small>
               <small>Erstellt am ${created}</small>
               <small>Priorität: ${escapeHtml(ticket.priority)}</small>
-              ${assignee}
+              ${assigneeLabel}
+              ${closedInfo}
             </div>
           </div>
           <p class="ticket-desc">${escapeHtml(ticket.description || 'Keine Beschreibung')}</p>
@@ -2246,13 +2269,18 @@ function renderTickets() {
               <button type="button" class="primary" data-ticket-submit="${ticket.id}">Speichern</button>
             </div>
           </div>
-          <div>
-            <p class="muted">Aktivität</p>
-            <ul class="ticket-updates">${updateList || '<li class="muted">Noch keine Notizen vorhanden.</li>'}</ul>
-          </div>
+          ${activity}
         </article>`;
-    })
-    .join('');
+  };
+  const openSection = openTickets.length
+    ? `<div class="ticket-section"><div class="ticket-section__grid">${openTickets.map(renderCard).join('')}</div></div>`
+    : '';
+  const closedSection = closedTickets.length
+    ? `<details class="ticket-section closed"><summary>Geschlossene Tickets (${closedTickets.length})</summary><div class="ticket-section__grid">${closedTickets
+        .map(renderCard)
+        .join('')}</div></details>`
+    : '';
+  ticketList.innerHTML = openSection + closedSection;
 }
 
 function updateTicketActionLabel(card) {
@@ -2323,12 +2351,32 @@ function fillEmploymentForm(entry) {
 function handleEmployeeForm(e) {
   e.preventDefault();
   const data = new FormData(employeeForm);
-  const isUpdate = !!editing.employee;
-  const existing = isUpdate ? state.employees.find((emp) => emp.id === editing.employee) : null;
+  let isUpdate = !!editing.employee;
+  let existing = isUpdate ? state.employees.find((emp) => emp.id === editing.employee) : null;
   const exitDate = parseISODate(data.get('endDate'));
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   if (exitDate) exitDate.setHours(0, 0, 0, 0);
+  const personnelNumber = data.get('personnelNumber').trim();
+  const duplicate = state.employees.find((emp) => emp.personnelNumber === personnelNumber && emp.id !== existing?.id);
+  if (duplicate) {
+    if (duplicate.status === 'exited') {
+      const reactivate = confirm(
+        `Dienstnummer ${personnelNumber} gehört zu ${formatName(duplicate)} (ausgeschieden). Wieder aktivieren?`
+      );
+      if (!reactivate) {
+        showNotification('Fehler beim Speichern', 'error');
+        return;
+      }
+      existing = duplicate;
+      editing.employee = duplicate.id;
+      isUpdate = true;
+    } else {
+      alert(`Dienstnummer ${personnelNumber} ist bereits vergeben.`);
+      showNotification('Fehler beim Speichern', 'error');
+      return;
+    }
+  }
   const entry = {
     id: editing.employee ?? uuid(),
     vacations: existing?.vacations ? clone(existing.vacations) : [],
@@ -2336,7 +2384,7 @@ function handleEmployeeForm(e) {
     groupId: existing?.groupId || null,
     firstName: data.get('firstName').trim(),
     lastName: data.get('lastName').trim(),
-    personnelNumber: data.get('personnelNumber').trim(),
+    personnelNumber,
     birthday: data.get('birthday'),
     email: data.get('email') || '',
     employmentPercent: data.get('employmentPercent'),
@@ -2357,6 +2405,11 @@ function handleEmployeeForm(e) {
     entry.status = 'exited';
   }
 
+  if (existing?.status === 'exited' && entry.status !== 'exited') {
+    entry.endDate = '';
+    entry.status = 'active';
+  }
+
   if (isUpdate) {
     if (!confirm('Wollen Sie die Änderungen wirklich speichern?')) return;
     const idx = state.employees.findIndex((emp) => emp.id === editing.employee);
@@ -2365,10 +2418,10 @@ function handleEmployeeForm(e) {
     }
   } else {
     state.employees.push(entry);
-    ensureEmployeeInLayout(entry.id);
     editing.employee = entry.id;
     employeePicker.value = entry.id;
   }
+  ensureEmployeeInLayout(entry.id);
   appendLog('employees', `Mitarbeiter ${formatName(entry)} ${isUpdate ? 'aktualisiert' : 'angelegt'}.`, entry.id);
   updateExitedEmployees(false);
   saveState();
@@ -2405,6 +2458,28 @@ function handleEmployeeExit() {
   renderRoster();
   handleEmployeeFormReset();
   showNotification('Änderung erfolgreich gespeichert', 'success');
+}
+
+function activateEmployee(id) {
+  const emp = state.employees.find((e) => e.id === id);
+  if (!emp || emp.status !== 'exited') return;
+  if (!confirm(`Mitarbeiter ${formatName(emp)} wieder aktivieren?`)) return;
+  emp.status = 'active';
+  emp.endDate = '';
+  ensureEmployeeInLayout(emp.id);
+  appendLog('employees', `Mitarbeiter ${formatName(emp)} reaktiviert.`, emp.id);
+  saveState();
+  updateDropdowns();
+  renderEmployees();
+  renderRoster();
+  showNotification('Änderung erfolgreich gespeichert', 'success');
+}
+
+function handleEmployeeListClick(event) {
+  const activateBtn = event.target instanceof Element ? event.target.closest('[data-activate-employee]') : null;
+  if (activateBtn) {
+    activateEmployee(activateBtn.dataset.activateEmployee);
+  }
 }
 
 function handleServiceForm(e) {
@@ -2547,6 +2622,27 @@ function handleEmploymentForm(e) {
   showNotification(isUpdate ? 'Änderung erfolgreich gespeichert' : 'Eintrag erfolgreich gespeichert', 'success');
 }
 
+function describeWeekdaySelections(selections) {
+  return WEEKDAY_KEYS.map((key) => {
+    const ids = selections?.[key] || [];
+    if (!ids.length) return null;
+    const counts = ids.reduce((acc, id) => {
+      acc[id] = (acc[id] || 0) + 1;
+      return acc;
+    }, {});
+    const services = Object.entries(counts)
+      .map(([id, count]) => {
+        const service = state.services.find((s) => s.id === id);
+        return service ? `${service.name}${count > 1 ? `×${count}` : ''}` : '';
+      })
+      .filter(Boolean)
+      .join(', ');
+    return services ? `${weekdayLabelFromKey(key)}: ${services}` : null;
+  })
+    .filter(Boolean)
+    .join(' | ');
+}
+
 function handleRulesForm(e) {
   e.preventDefault();
   const data = new FormData(rulesForm);
@@ -2566,12 +2662,22 @@ function handleRulesForm(e) {
   state.rules.vacationDefault = Number.isFinite(vacationDefault)
     ? vacationDefault
     : state.rules.vacationDefault;
-  let message = 'Regelwerk aktualisiert.';
+  const limits = [
+    Number.isFinite(restDays) ? `${restDays} Ruhetage` : null,
+    Number.isFinite(maxWeek) ? `${maxWeek}h/Woche` : null,
+    Number.isFinite(minFreeWeekends) ? `${minFreeWeekends} freie Wochenenden` : null,
+    Number.isFinite(maxNights) ? `${maxNights} Nachtdienste` : null,
+  ]
+    .filter(Boolean)
+    .join(', ');
+  let message = `Regelwerk aktualisiert.${limits ? ` (${limits})` : ''}`;
   if (existingRule) {
     existingRule.start = start || existingRule.start || '';
     existingRule.end = end || existingRule.end || '';
     existingRule.services = selections;
-    message = `Pflichtdienste ${existingRule.start ? 'ab ' + formatShortDate(existingRule.start) : ''} aktualisiert.`;
+    const desc = describeWeekdaySelections(selections);
+    const rangeLabel = existingRule.start ? `ab ${formatShortDate(existingRule.start)}` : 'laufend';
+    message = `Pflichtdienste ${rangeLabel} aktualisiert: ${desc || 'keine Dienste hinterlegt'}.`;
   } else if (start) {
     state.rules.weekdayRules = state.rules.weekdayRules || [];
     const entry = {
@@ -2585,16 +2691,21 @@ function handleRulesForm(e) {
     editingWeekdayRuleId = entry.id;
     if (weekdayRangeStart) weekdayRangeStart.value = '';
     if (weekdayRangeEnd) weekdayRangeEnd.value = '';
-    message = `Pflichtdienste ab ${formatShortDate(start)} gespeichert.`;
+    const desc = describeWeekdaySelections(selections);
+    message = `Pflichtdienste ab ${formatShortDate(start)} gespeichert: ${desc || 'keine Dienste hinterlegt'}.`;
   } else if (state.rules.weekdayRules?.length) {
     const active = currentWeekdayRule();
     if (active) {
       active.services = selections;
       editingWeekdayRuleId = active.id;
+      const desc = describeWeekdaySelections(selections);
+      message = `Pflichtdienste aktualisiert: ${desc || 'keine Dienste hinterlegt'}.`;
     }
   } else {
     state.rules.weekdayRules = [createWeekdayRule({ services: selections })];
     editingWeekdayRuleId = state.rules.weekdayRules[0].id;
+    const desc = describeWeekdaySelections(selections);
+    message = `Pflichtdienste hinterlegt: ${desc || 'keine Dienste hinterlegt'}.`;
   }
   appendLog('rules', message, 'rules');
   saveState();
@@ -2655,7 +2766,7 @@ function buildRosterHeader(date) {
   const headerRows = [document.createElement('tr'), document.createElement('tr')];
   const stickyCells = [
     '<th class="names col-info" rowspan="2"><div class="info-header"><span>Name</span><span>Personalnummer</span></div></th>',
-    '<th class="names col-hours" rowspan="2"><div class="hours-header"><span>Stundensoll</span><span>Noch zu verplanen</span><span>Nachtdienste</span><span>Feiertagsdienste</span></div></th>',
+    '<th class="names col-hours" rowspan="2"><div class="hours-header"><span>Details</span></div></th>',
   ];
   stickyCells.forEach((html) => headerRows[0].insertAdjacentHTML('beforeend', html));
   for (let day = 1; day <= days; day++) {
@@ -3312,7 +3423,11 @@ function generateRoster() {
           const diff = targetHours ? Math.abs(targetHours - projectedHours) : 0;
           const overPenalty = targetHours && projectedHours > targetHours ? projectedHours - targetHours : 0;
           const diversity = counts.service * 2 + counts.total * 0.5;
-          const score = diff + overPenalty * 2 + diversity;
+          const prevAssignment = state.assignments[monthKey][emp.id]?.[day - 1];
+          const secondPrevAssignment = state.assignments[monthKey][emp.id]?.[day - 2];
+          const nextAssignment = state.assignments[monthKey][emp.id]?.[day + 1];
+          const continuityBonus = (prevAssignment ? -4 : 0) + (secondPrevAssignment ? -1 : 0) + (nextAssignment ? -2 : 0);
+          const score = diff + overPenalty * 2 + diversity + continuityBonus;
           return { emp, score, counts, projectedHours };
         })
         .filter(Boolean)
@@ -3507,23 +3622,29 @@ function handleTicketCardAction(event) {
   const note = (noteField?.value || '').trim();
   const notify = !!notifyField?.checked;
   const previousStatus = ticket.status;
+  const timestamp = new Date().toISOString();
+  const timestampLabel = new Date(timestamp).toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' });
+  let autoNote = 'Aktualisiert';
+  if (status === 'in Bearbeitung' && previousStatus !== 'in Bearbeitung') {
+    autoNote = `Bearbeitung übernommen durch Hans Maier am ${timestampLabel}`;
+  } else if (status === 'Geschlossen' && previousStatus !== 'Geschlossen') {
+    autoNote = `Ticket abgeschlossen am ${timestampLabel}`;
+  } else if (status !== previousStatus) {
+    autoNote = `Status geändert: ${previousStatus} → ${status} (${timestampLabel})`;
+  }
   const entry = {
     id: uuid(),
     status,
-    note:
-      note ||
-      (status === 'in Bearbeitung' && previousStatus !== 'in Bearbeitung'
-        ? 'Bearbeitung übernommen durch Hans Maier'
-        : status !== previousStatus
-          ? `Status geändert: ${previousStatus} → ${status}`
-          : 'Aktualisiert'),
-    timestamp: new Date().toISOString(),
+    note: note || autoNote,
+    timestamp,
     notify,
   };
   ticket.status = status;
   if (status === 'in Bearbeitung') {
     ticket.assignee = 'Hans Maier';
+    ticket.assignedAt = timestamp;
   }
+  ticket.closedAt = status === 'Geschlossen' ? timestamp : status === previousStatus ? ticket.closedAt || '' : '';
   ticket.updates = [entry, ...(ticket.updates || [])].slice(0, 100);
   appendLog('tickets', `Ticket '${ticket.name}' auf '${status}' aktualisiert.`, ticket.id);
   saveState();
@@ -3544,6 +3665,7 @@ function wireEvents() {
   employeeForm.addEventListener('submit', handleEmployeeForm);
   employeeForm.addEventListener('reset', handleEmployeeFormReset);
   if (employeeExitBtn) employeeExitBtn.addEventListener('click', handleEmployeeExit);
+  if (employeeList) employeeList.addEventListener('click', handleEmployeeListClick);
   serviceForm.addEventListener('submit', handleServiceForm);
   functionForm.addEventListener('submit', handleFunctionForm);
   functionForm.addEventListener('reset', () => {

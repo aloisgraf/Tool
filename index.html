@@ -319,7 +319,7 @@
                 <div class="weekday-field" data-weekday-field="1">
                   <strong>Montag</strong>
                   <div class="weekday-controls">
-                    <select data-weekday-select="1"></select>
+                    <select data-weekday-select="1" multiple size="5"></select>
                     <button type="button" data-weekday-add="1">Hinzufügen</button>
                   </div>
                   <div class="weekday-chips" data-weekday-list="1"></div>
@@ -327,7 +327,7 @@
                 <div class="weekday-field" data-weekday-field="2">
                   <strong>Dienstag</strong>
                   <div class="weekday-controls">
-                    <select data-weekday-select="2"></select>
+                    <select data-weekday-select="2" multiple size="5"></select>
                     <button type="button" data-weekday-add="2">Hinzufügen</button>
                   </div>
                   <div class="weekday-chips" data-weekday-list="2"></div>
@@ -335,7 +335,7 @@
                 <div class="weekday-field" data-weekday-field="3">
                   <strong>Mittwoch</strong>
                   <div class="weekday-controls">
-                    <select data-weekday-select="3"></select>
+                    <select data-weekday-select="3" multiple size="5"></select>
                     <button type="button" data-weekday-add="3">Hinzufügen</button>
                   </div>
                   <div class="weekday-chips" data-weekday-list="3"></div>
@@ -343,7 +343,7 @@
                 <div class="weekday-field" data-weekday-field="4">
                   <strong>Donnerstag</strong>
                   <div class="weekday-controls">
-                    <select data-weekday-select="4"></select>
+                    <select data-weekday-select="4" multiple size="5"></select>
                     <button type="button" data-weekday-add="4">Hinzufügen</button>
                   </div>
                   <div class="weekday-chips" data-weekday-list="4"></div>
@@ -351,7 +351,7 @@
                 <div class="weekday-field" data-weekday-field="5">
                   <strong>Freitag</strong>
                   <div class="weekday-controls">
-                    <select data-weekday-select="5"></select>
+                    <select data-weekday-select="5" multiple size="5"></select>
                     <button type="button" data-weekday-add="5">Hinzufügen</button>
                   </div>
                   <div class="weekday-chips" data-weekday-list="5"></div>
@@ -359,7 +359,7 @@
                 <div class="weekday-field" data-weekday-field="6">
                   <strong>Samstag</strong>
                   <div class="weekday-controls">
-                    <select data-weekday-select="6"></select>
+                    <select data-weekday-select="6" multiple size="5"></select>
                     <button type="button" data-weekday-add="6">Hinzufügen</button>
                   </div>
                   <div class="weekday-chips" data-weekday-list="6"></div>
@@ -367,7 +367,7 @@
                 <div class="weekday-field" data-weekday-field="0">
                   <strong>Sonntag</strong>
                   <div class="weekday-controls">
-                    <select data-weekday-select="0"></select>
+                    <select data-weekday-select="0" multiple size="5"></select>
                     <button type="button" data-weekday-add="0">Hinzufügen</button>
                   </div>
                   <div class="weekday-chips" data-weekday-list="0"></div>
@@ -375,7 +375,7 @@
                 <div class="weekday-field" data-weekday-field="holiday">
                   <strong>Feiertage (Salzburg)</strong>
                   <div class="weekday-controls">
-                    <select data-weekday-select="holiday"></select>
+                    <select data-weekday-select="holiday" multiple size="5"></select>
                     <button type="button" data-weekday-add="holiday">Hinzufügen</button>
                   </div>
                   <div class="weekday-chips" data-weekday-list="holiday"></div>
@@ -393,18 +393,28 @@
             </div>
             <div class="list" id="weekdayHistory" aria-live="polite"></div>
           </section>
-          <section class="overview-block">
-            <div class="overview-header">
-              <p class="eyebrow">Übersicht</p>
-              <h3>Regelzusammenfassung</h3>
-            </div>
-            <div class="list" id="rulesSummary" aria-live="polite"></div>
-          </section>
-          <section class="overview-block">
-            <div class="overview-header">
-              <p class="eyebrow">Urlaubskapazitäten</p>
-              <h3>Ausnahmen verwalten</h3>
-            </div>
+        <section class="overview-block">
+          <div class="overview-header">
+            <p class="eyebrow">Übersicht</p>
+            <h3>Regelzusammenfassung</h3>
+          </div>
+          <div class="list" id="rulesSummary" aria-live="polite"></div>
+        </section>
+        <section class="overview-block">
+          <div class="overview-header">
+            <p class="eyebrow">Protokoll</p>
+            <h3>Regel-Log</h3>
+          </div>
+          <details class="log-panel">
+            <summary>Logs anzeigen</summary>
+            <ul id="rulesLog" class="log-list"></ul>
+          </details>
+        </section>
+        <section class="overview-block">
+          <div class="overview-header">
+            <p class="eyebrow">Urlaubskapazitäten</p>
+            <h3>Ausnahmen verwalten</h3>
+          </div>
             <form id="vacationLimitForm" class="vacation-limit-form">
               <label>Datum von
                 <input type="date" id="vacationLimitStart">
@@ -475,10 +485,6 @@
         </div>
         <div class="admin-panel">
           <div id="ticketList" class="ticket-grid" aria-live="polite"></div>
-          <details class="log-panel">
-            <summary>Ticket-Log</summary>
-            <ul id="ticketLog" class="log-list"></ul>
-          </details>
         </div>
       </section>
     </div>
