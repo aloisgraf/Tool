@@ -3380,19 +3380,76 @@ function generateRoster() {
     assignmentCounts.set(empId, (assignmentCounts.get(empId) || 0) + 1);
   };
 
+  const countConsecutiveAssignments = (empId, day, predicate) => {
+    const assignments = state.assignments[monthKey]?.[empId] || {};
+    let streak = 0;
+    for (let i = day - 1; i >= 1; i--) {
+      const sid = assignments[i];
+      if (!sid) break;
+      const svc = state.services.find((s) => s.id === sid);
+      if (!svc || !predicate(svc, sid)) break;
+      streak++;
+    }
+    return streak;
+  };
+
+  const lastDayServiceGap = (empId, day) => {
+    const assignments = state.assignments[monthKey]?.[empId] || {};
+    for (let i = day - 1; i >= 1; i--) {
+      const sid = assignments[i];
+      if (!sid) continue;
+      const svc = state.services.find((s) => s.id === sid);
+      if (svc && !isNightService(svc)) {
+        return day - i - 1;
+      }
+    }
+    return null;
+  };
+
+  const isAvailableForDate = (emp, date, service) => {
+    if (!isEmployeeActiveOnDate(emp, date)) return false;
+    const func = state.functions.find((f) => f.id === emp.functionId);
+    const allowed = Array.isArray(func?.serviceIds) && func.serviceIds.includes(service.id);
+    if (!allowed) return false;
+    if (findVacationOnDate(emp, date)) return false;
+    if (findSickOnDate(emp, date)) return false;
+    if (isNightService(service) && !emp.nightAllowed) return false;
+    return true;
+  };
+
   for (let day = 1; day <= days; day++) {
     const currentDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
     const servicesForDay = getRequiredServicesForDate(currentDate);
     for (const service of servicesForDay) {
       const candidates = rotated
         .filter((emp) => {
-          if (!isEmployeeActiveOnDate(emp, currentDate)) return false;
-          const func = state.functions.find((f) => f.id === emp.functionId);
-          const allowed = Array.isArray(func?.serviceIds) && func.serviceIds.includes(service.id);
-          if (!allowed) return false;
-          if (findVacationOnDate(emp, currentDate)) return false;
-          if (findSickOnDate(emp, currentDate)) return false;
-          if (isNightService(service) && !emp.nightAllowed) return false;
+          if (!isAvailableForDate(emp, currentDate, service)) return false;
+          const dayAssignments = state.assignments[monthKey][emp.id] || {};
+          const locked = state.locks[monthKey]?.[emp.id]?.[day];
+          const existing = dayAssignments[day];
+          if (locked || existing) return false;
+          const previousServiceId = dayAssignments[day - 1];
+          const previousService = previousServiceId
+            ? state.services.find((s) => s.id === previousServiceId)
+            : null;
+          const nextServiceId = dayAssignments[day + 1];
+          const nextService = nextServiceId ? state.services.find((s) => s.id === nextServiceId) : null;
+          const isNight = isNightService(service);
+          const hadNightYesterday = previousService && isNightService(previousService);
+          const hadDayYesterday = previousService && !isNightService(previousService);
+          if ((isNight && hadDayYesterday) || (!isNight && hadNightYesterday)) return false;
+          const sameServiceStreak = countConsecutiveAssignments(
+            emp.id,
+            day,
+            (svc, sid) => sid === service.id
+          );
+          if (sameServiceStreak >= 4) return false;
+          const dayStreak = countConsecutiveAssignments(emp.id, day, (svc) => !isNightService(svc));
+          const nightStreak = countConsecutiveAssignments(emp.id, day, (svc) => isNightService(svc));
+          if (!isNight && dayStreak >= 4) return false;
+          if (isNight && nightStreak >= 2) return false;
+          if (isNight && !emp.doubleNights && nightStreak >= 1) return false;
+          if (nextService && isNightService(nextService) !== isNightService(service)) return false;
           return true;
         })
         .map((emp) => {
@@ -3427,7 +3484,44 @@ function generateRoster() {
           const secondPrevAssignment = state.assignments[monthKey][emp.id]?.[day - 2];
           const nextAssignment = state.assignments[monthKey][emp.id]?.[day + 1];
           const continuityBonus = (prevAssignment ? -4 : 0) + (secondPrevAssignment ? -1 : 0) + (nextAssignment ? -2 : 0);
-          const score = diff + overPenalty * 2 + diversity + continuityBonus;
+          let blockPenalty = 0;
+          const isNight = isNightService(service);
+          if (!isNight) {
+            const dayStreak = countConsecutiveAssignments(emp.id, day, (svc) => !isNightService(svc));
+            if (dayStreak === 0) blockPenalty += 1;
+            if (dayStreak >= 2) blockPenalty -= 1;
+            const gap = lastDayServiceGap(emp.id, day);
+            if (gap !== null && gap > 2) blockPenalty += 2;
+          } else {
+            const nightStreak = countConsecutiveAssignments(emp.id, day, (svc) => isNightService(svc));
+            if (nightStreak === 0 && day <= 10) blockPenalty += 4;
+            else if (nightStreak === 0 && day <= 15) blockPenalty += 2;
+            if (nightStreak === 1 && emp.doubleNights) blockPenalty -= 2;
+          }
+
+          const weekendBlockPenalty = (() => {
+            const dow = currentDate.getDay();
+            if (dow === 0) {
+              // Sunday should stick to Saturday assignment of the same service
+              const saturdayHolder = state.employees.find((candidate) => {
+                const assignment = state.assignments[monthKey][candidate.id]?.[day - 1];
+                return assignment === service.id;
+              });
+              if (saturdayHolder && saturdayHolder.id !== emp.id) return 50;
+            }
+            if (dow === 6) {
+              const nextDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), day + 1);
+              const sundayServices = getRequiredServicesForDate(nextDate);
+              const needsPair = sundayServices.some((s) => s.id === service.id);
+              if (needsPair) {
+                const availableSunday = isAvailableForDate(emp, nextDate, service);
+                if (!availableSunday) return 25;
+              }
+            }
+            return 0;
+          })();
+
+          const score = diff + overPenalty * 2 + diversity + continuityBonus + blockPenalty + weekendBlockPenalty;
           return { emp, score, counts, projectedHours };
         })
         .filter(Boolean)
