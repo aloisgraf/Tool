@@ -13,13 +13,26 @@
       <p class="eyebrow">Dienstplanung · Salzburg</p>
       <h1>Dienstplan- und Admin-Console</h1>
     </div>
-    <div class="theme-toggle">
-      <span>Darstellung</span>
-      <button type="button" id="themeToggle" class="ghost">Heller Modus</button>
+    <div class="page-header__actions">
+      <div class="theme-toggle">
+        <span>Darstellung</span>
+        <button type="button" id="themeToggle" class="ghost">Heller Modus</button>
+      </div>
+      <form id="loginForm" class="login-box">
+        <div class="login-fields">
+          <label>Personalnummer<input id="loginUser" name="loginUser" autocomplete="username"></label>
+          <label>Passwort<input id="loginPassword" type="password" name="loginPassword" autocomplete="current-password"></label>
+        </div>
+        <div class="login-actions">
+          <button type="submit" class="primary">Login</button>
+          <button type="button" id="logoutBtn" class="ghost" hidden>Logout</button>
+        </div>
+        <p id="loginStatus" class="muted"></p>
+      </form>
     </div>
   </header>
 
-  <main class="layout">
+  <main class="layout" id="appShell" hidden>
     <nav class="main-menu" aria-label="Hauptmenü">
       <details class="menu-accordion" open>
         <summary>
@@ -122,29 +135,47 @@
             <label>Personalnummer<input name="personnelNumber" required></label>
             <label>Geburtstag<input type="date" name="birthday" required></label>
             <label>E-Mail-Adresse<input type="email" name="email" placeholder="beispiel@firma.at"></label>
-            <label>Anstellung in %
-              <select name="employmentPercent" id="employmentPercentSelect"></select>
-            </label>
-            <label>Anstellung in Stunden pro Monat
-              <select name="employmentHours" id="employmentHoursSelect"></select>
-            </label>
+            <div class="inline-fieldset">
+              <label>Anstellung in %
+                <select name="employmentPercent" id="employmentPercentSelect"></select>
+              </label>
+              <label>Anstellung in Stunden pro Monat
+                <select name="employmentHours" id="employmentHoursSelect"></select>
+              </label>
+            </div>
             <label>Funktion
               <select name="functionId" id="functionSelect"></select>
             </label>
-            <label>Eintrittsdatum<input type="date" name="hireDate"></label>
-            <label>Austrittsdatum<input type="date" name="endDate"></label>
-            <label>Durchrechnungsfaktor<input type="text" name="holidayFactor" inputmode="decimal" value="0"></label>
-            <label>Tägliche Sollarbeitszeit<input type="text" name="dailyWorkHours" inputmode="decimal" value="0"></label>
+            <div class="inline-fieldset">
+              <label>Eintrittsdatum<input type="date" name="hireDate"></label>
+              <label>Austrittsdatum<input type="date" name="endDate"></label>
+            </div>
+            <div class="inline-fieldset">
+              <label>Durchrechnungsfaktor<input type="text" name="holidayFactor" inputmode="decimal" value="0"></label>
+              <label>Tägliche Sollarbeitszeit<input type="text" name="dailyWorkHours" inputmode="decimal" value="0"></label>
+            </div>
             <label>Urlaubstage pro Jahr<input type="number" name="vacationDays" min="0" step="1" required></label>
-            <label class="checkbox">
-              <input type="checkbox" name="nightAllowed"> Nachtdienst Ja/Nein
-            </label>
-            <label class="checkbox">
-              <input type="checkbox" name="doubleNights"> Doppelnächte
-            </label>
-            <label class="checkbox">
-              <input type="checkbox" name="rkt"> RKT Ja/Nein
-            </label>
+            <div class="stacked-checkboxes">
+              <label class="checkbox">
+                <input type="checkbox" name="nightAllowed"> Nachtdienste
+              </label>
+              <label class="checkbox">
+                <input type="checkbox" name="doubleNights"> Doppelnächte
+              </label>
+              <label class="checkbox">
+                <input type="checkbox" name="rkt"> RKT
+              </label>
+            </div>
+            <fieldset class="inline-fieldset radio-row">
+              <legend>Dienstplan-Rechte</legend>
+              <label class="radio"><input type="radio" name="rosterPermission" value="write"> Dienstplan schreiben</label>
+              <label class="radio"><input type="radio" name="rosterPermission" value="read"> Dienstplan lesen</label>
+            </fieldset>
+            <fieldset class="inline-fieldset radio-row">
+              <legend>Ticket-Rechte</legend>
+              <label class="radio"><input type="radio" name="ticketPermission" value="write"> Tickets schreiben</label>
+              <label class="radio"><input type="radio" name="ticketPermission" value="edit"> Tickets bearbeiten</label>
+            </fieldset>
             <div class="form-actions">
               <button type="submit" class="primary">Speichern</button>
               <button type="button" id="employeeExitBtn" class="ghost danger">Ausscheiden</button>
@@ -221,8 +252,10 @@
           </div>
           <form id="serviceForm" class="grid">
             <label>Dienstname<input name="name" required placeholder="z.B. NCN"></label>
-            <label>Beginn<input type="time" name="start" required></label>
-            <label>Ende<input type="time" name="end" required></label>
+            <div class="inline-fieldset">
+              <label>Beginn<input type="time" name="start" required></label>
+              <label>Ende<input type="time" name="end" required></label>
+            </div>
             <label class="checkbox"><input type="checkbox" name="isNight"> Nachtdienst</label>
             <div class="form-actions">
               <button type="submit" class="primary">Dienst speichern</button>
@@ -304,7 +337,8 @@
         </div>
         <div class="admin-panel">
           <form id="rulesForm" class="grid">
-            <label>Ruhetage nach Dienst (Tage)<input type="number" name="restDays" min="0" step="1"></label>
+            <label>Ruhetage nach Nachtdienst<input type="number" name="restAfterNight" min="0" step="1"></label>
+            <label>Ruhetage nach Doppelnacht<input type="number" name="restAfterDoubleNight" min="0" step="1"></label>
             <label>Max. Arbeitszeit pro Woche (Stunden)<input type="number" name="maxHoursWeek" min="0" step="1"></label>
             <label>Freizuhaltende Wochenenden (Anzahl)<input type="number" name="minFreeWeekends" min="0" step="1"></label>
             <label>Max. Nachtdienste<input type="number" name="maxNights" min="0" step="1"></label>

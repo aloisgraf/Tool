@@ -16,6 +16,11 @@ const STORAGE_KEYS = {
 const STORAGE_FILE_NAME = 'dienstplan_daten.json';
 const THEME_STORAGE_KEY = 'dienstplan_theme';
 
+const USERS = {
+  '05475': { password: '1234', name: 'Admin', permissions: { roster: 'write', tickets: 'edit', admin: true } },
+  '012345': { password: '4321', name: 'Leser', permissions: { roster: 'read', tickets: 'create', admin: false } },
+};
+
 const uuid = () => {
   const hasCrypto = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function';
   return hasCrypto ? crypto.randomUUID() : `id-${Math.random().toString(16).slice(2)}-${Date.now()}`;
@@ -102,6 +107,8 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     hireDate: '2023-01-01',
     endDate: '',
     doubleNights: false,
+    rosterPermission: 'write',
+    ticketPermission: 'edit',
     status: 'active',
   },
   {
@@ -125,6 +132,8 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     hireDate: '2023-01-01',
     endDate: '',
     doubleNights: false,
+    rosterPermission: 'write',
+    ticketPermission: 'edit',
     status: 'active',
   },
   {
@@ -148,6 +157,8 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     hireDate: '2023-01-01',
     endDate: '',
     doubleNights: false,
+    rosterPermission: 'write',
+    ticketPermission: 'edit',
     status: 'active',
   },
   {
@@ -171,6 +182,8 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     hireDate: '2023-01-01',
     endDate: '',
     doubleNights: false,
+    rosterPermission: 'write',
+    ticketPermission: 'edit',
     status: 'active',
   },
 ];
@@ -206,7 +219,8 @@ const createWeekdayRule = (overrides = {}) => ({
 });
 
 const DEFAULT_RULES = {
-  restDays: 1,
+  restAfterNight: 1,
+  restAfterDoubleNight: 2,
   maxHoursWeek: 40,
   minFreeWeekends: 0,
   maxNights: 8,
@@ -273,6 +287,8 @@ const prevMonthBtn = document.getElementById('prevMonth');
 const nextMonthBtn = document.getElementById('nextMonth');
 const generateBtn = document.getElementById('generatePlan');
 const printPlanBtn = document.getElementById('printPlan');
+const clearBtn = document.getElementById('clearPlan');
+const appShell = document.getElementById('appShell');
 const saveFileBtn = document.getElementById('saveFile');
 const loadFileBtn = document.getElementById('loadFile');
 const loadFileInput = document.getElementById('loadFileInput');
@@ -303,6 +319,11 @@ const sickTypeSelect = document.getElementById('sickType');
 const rosterModeButtons = document.querySelectorAll('[data-roster-mode]');
 const serviceLegend = document.getElementById('serviceLegend');
 const themeToggle = document.getElementById('themeToggle');
+const loginForm = document.getElementById('loginForm');
+const loginUser = document.getElementById('loginUser');
+const loginPassword = document.getElementById('loginPassword');
+const loginStatus = document.getElementById('loginStatus');
+const logoutBtn = document.getElementById('logoutBtn');
 const openSickList = document.getElementById('openSickList');
 const vacationLimitForm = document.getElementById('vacationLimitForm');
 const vacationLimitStart = document.getElementById('vacationLimitStart');
@@ -341,6 +362,7 @@ let rosterMode = 'edit';
 let modeBeforePrint = null;
 let currentTheme = localStorage.getItem(THEME_STORAGE_KEY) || 'dark';
 let editingWeekdayRuleId = currentWeekdayRule()?.id || null;
+let currentUser = null;
 
 function loadState() {
   const employment = loadArray(STORAGE_KEYS.employmentTypes, DEFAULT_EMPLOYMENT);
@@ -354,6 +376,12 @@ function loadState() {
   };
   rules.minFreeWeekends =
     storedRules?.minFreeWeekends ?? storedRules?.maxWeekendDays ?? DEFAULT_RULES.minFreeWeekends;
+  rules.restAfterNight = Number.isFinite(Number(rules.restAfterNight))
+    ? Number(rules.restAfterNight)
+    : DEFAULT_RULES.restAfterNight;
+  rules.restAfterDoubleNight = Number.isFinite(Number(rules.restAfterDoubleNight))
+    ? Number(rules.restAfterDoubleNight)
+    : DEFAULT_RULES.restAfterDoubleNight;
   rules.weekdayRules = normalizeWeekdayRules(storedRules, services);
   rules.vacationDefault = Number.isFinite(Number(rules.vacationDefault))
     ? Number(rules.vacationDefault)
@@ -446,6 +474,8 @@ function normalizeEmployees(employees = [], groups = []) {
     const hireDate = parseISODate(emp.hireDate) ? emp.hireDate : '';
     const endDate = parseISODate(emp.endDate) ? emp.endDate : '';
     const status = emp.status === 'exited' ? 'exited' : 'active';
+    const rosterPermission = ['write', 'read'].includes(emp.rosterPermission) ? emp.rosterPermission : 'write';
+    const ticketPermission = ['write', 'edit'].includes(emp.ticketPermission) ? emp.ticketPermission : 'edit';
     const normalized = {
       ...emp,
       vacationDays: Number.isFinite(vacationDays) ? vacationDays : 0,
@@ -459,6 +489,8 @@ function normalizeEmployees(employees = [], groups = []) {
       endDate,
       doubleNights: !!emp.doubleNights,
       status,
+      rosterPermission,
+      ticketPermission,
     };
     return normalized;
   });
@@ -755,6 +787,12 @@ function importState(json) {
     };
     rules.minFreeWeekends =
       parsedRules.minFreeWeekends ?? parsedRules.maxWeekendDays ?? DEFAULT_RULES.minFreeWeekends;
+    rules.restAfterNight = Number.isFinite(Number(rules.restAfterNight))
+      ? Number(rules.restAfterNight)
+      : DEFAULT_RULES.restAfterNight;
+    rules.restAfterDoubleNight = Number.isFinite(Number(rules.restAfterDoubleNight))
+      ? Number(rules.restAfterDoubleNight)
+      : DEFAULT_RULES.restAfterDoubleNight;
     rules.weekdayRules = normalizeWeekdayRules(parsedRules, services);
     rules.vacationDefault = Number.isFinite(Number(rules.vacationDefault))
       ? Number(rules.vacationDefault)
@@ -1456,7 +1494,7 @@ function renderEmployees() {
     </details>`;
 
   employeeList.innerHTML = [
-    renderSection('Aktive Mitarbeiter', active, 'Noch keine aktiven Mitarbeiter.', true),
+    renderSection('Aktive Mitarbeiter', active, 'Noch keine aktiven Mitarbeiter.'),
     renderSection('Ausgeschieden', exited, 'Keine ausgeschiedenen Mitarbeiter.'),
   ].join('');
   renderOpenSickList();
@@ -2050,7 +2088,8 @@ function handleWeekdayHistoryClick(event) {
 function renderRules() {
   const r = state.rules;
   const form = rulesForm.elements;
-  form.restDays.value = r.restDays ?? '';
+  form.restAfterNight.value = r.restAfterNight ?? '';
+  form.restAfterDoubleNight.value = r.restAfterDoubleNight ?? '';
   form.maxHoursWeek.value = r.maxHoursWeek ?? '';
   if (form.minFreeWeekends) form.minFreeWeekends.value = r.minFreeWeekends ?? '';
   form.maxNights.value = r.maxNights ?? '';
@@ -2064,12 +2103,25 @@ function renderRules() {
   renderWeekdayHistory();
   renderVacationLimitList();
   if (rulesSummary) {
-    const summary = `<div><strong>Aktive Regeln</strong></div><small>Ruhe: ${r.restDays ?? '–'} Tage · Woche max: ${
-      r.maxHoursWeek ?? '–'
-    } Std · Freie Wochenenden: ${r.minFreeWeekends ?? '–'} · Nachtdienste: ${r.maxNights ?? '–'} · Urlaubslimit: ${
-      r.vacationDefault ?? '–'
-    } Personen</small>`;
-    rulesSummary.innerHTML = `<div class="item">${summary}${renderLogDetails('rules', 'rules')}</div>`;
+    const summary = `<div><strong>Aktive Regeln</strong></div><small>Ruhe nach Nacht: ${
+      r.restAfterNight ?? '–'
+    } Tage · Ruhe nach Doppelnacht: ${r.restAfterDoubleNight ?? '–'} · Woche max: ${r.maxHoursWeek ?? '–'} Std · Freie Wochenenden: ${
+      r.minFreeWeekends ?? '–'
+    } · Nachtdienste: ${r.maxNights ?? '–'} · Urlaubslimit: ${r.vacationDefault ?? '–'} Personen</small>`;
+    const rosterNotes = [
+      'Tagblock 2–4 Tage, danach 1–2 Tage frei sofern möglich.',
+      'Nachtblöcke berücksichtigen Doppelnacht-Einstellung und erfordern Ruhepausen laut Feldern.',
+      'Wochenenden werden als Einheit geplant, direkte Wechsel D→N oder N→D werden verhindert.',
+      'Mindestens 11 Stunden Ruhezeit zwischen Diensten, maximal 4 gleiche Dienste am Stück.',
+      'Nachtverteilung über den Monat verteilt, Wochenendblöcke werden nicht gesplittet.',
+      'Nach vollständiger Planung werden Dienste auf Mitarbeitende mit offenen Stunden verschoben, solange Regeln eingehalten bleiben.',
+    ]
+      .map((line) => `<li>${line}</li>`)
+      .join('');
+    rulesSummary.innerHTML = `<div class="item">${summary}<ul class="rule-notes">${rosterNotes}</ul>${renderLogDetails(
+      'rules',
+      'rules'
+    )}</div>`;
   }
 }
 
@@ -2194,6 +2246,7 @@ function ticketPriorityIcon(priority) {
 
 function renderTickets() {
   if (!ticketList) return;
+  const editable = canManageTickets();
   const filter = ticketStatusFilter?.value || 'all';
   const tickets = (state.tickets || [])
     .slice()
@@ -2244,7 +2297,7 @@ function renderTickets() {
                 <h3>${priorityIcon}${escapeHtml(ticket.name)}${closedIcon}</h3>
               </div>
               <label class="ticket-status-control">Status
-                <select data-ticket-status="${ticket.id}">${statusOptions}</select>
+                <select data-ticket-status="${ticket.id}" ${editable ? '' : 'disabled'}>${statusOptions}</select>
               </label>
             </div>
             <div class="ticket-meta">
@@ -2260,13 +2313,13 @@ function renderTickets() {
           <p class="ticket-desc">${escapeHtml(ticket.description || 'Keine Beschreibung')}</p>
           <div class="ticket-actions">
             <label class="full-width update-note">Aktualisierung
-              <textarea rows="3" data-ticket-note="${ticket.id}" placeholder="Kommentar oder Fortschritt ergänzen"></textarea>
+              <textarea rows="3" data-ticket-note="${ticket.id}" placeholder="Kommentar oder Fortschritt ergänzen" ${editable ? '' : 'disabled'}></textarea>
             </label>
             <label class="checkbox inline">
-              <input type="checkbox" data-ticket-notify="${ticket.id}"> Einmelder per Mail benachrichtigen
+              <input type="checkbox" data-ticket-notify="${ticket.id}" ${editable ? '' : 'disabled'}> Einmelder per Mail benachrichtigen
             </label>
             <div class="form-actions">
-              <button type="button" class="primary" data-ticket-submit="${ticket.id}">Speichern</button>
+              <button type="button" class="primary" data-ticket-submit="${ticket.id}" ${editable ? '' : 'disabled'}>Speichern</button>
             </div>
           </div>
           ${activity}
@@ -2293,6 +2346,7 @@ function updateTicketActionLabel(card) {
 function handleTicketCardChange(event) {
   const checkbox = event.target.closest('input[data-ticket-notify]');
   if (!checkbox) return;
+  if (!canManageTickets()) return;
   const card = checkbox.closest('[data-ticket-id]');
   updateTicketActionLabel(card);
 }
@@ -2324,6 +2378,12 @@ function fillEmployeeForm(emp) {
   form.nightAllowed.checked = !!emp.nightAllowed;
   form.rkt.checked = !!emp.rkt;
   form.doubleNights.checked = !!emp.doubleNights;
+  if (form.rosterPermission) {
+    form.rosterPermission.value = emp.rosterPermission || 'write';
+  }
+  if (form.ticketPermission) {
+    form.ticketPermission.value = emp.ticketPermission || 'edit';
+  }
   if (employeeExitBtn) employeeExitBtn.disabled = emp.status === 'exited';
 }
 
@@ -2398,6 +2458,8 @@ function handleEmployeeForm(e) {
     nightAllowed: data.get('nightAllowed') === 'on',
     doubleNights: data.get('doubleNights') === 'on',
     rkt: data.get('rkt') === 'on',
+    rosterPermission: data.get('rosterPermission') || existing?.rosterPermission || 'write',
+    ticketPermission: data.get('ticketPermission') || existing?.ticketPermission || 'edit',
     status: existing?.status || 'active',
   };
 
@@ -2647,7 +2709,8 @@ function handleRulesForm(e) {
   e.preventDefault();
   const data = new FormData(rulesForm);
   const selections = ensureWeekdaySelections(weekdaySelections, state.services);
-  const restDays = toNumber(data.get('restDays'));
+  const restAfterNight = toNumber(data.get('restAfterNight'));
+  const restAfterDoubleNight = toNumber(data.get('restAfterDoubleNight'));
   const maxWeek = toNumber(data.get('maxHoursWeek'));
   const minFreeWeekends = toNumber(data.get('minFreeWeekends'));
   const maxNights = toNumber(data.get('maxNights'));
@@ -2655,7 +2718,8 @@ function handleRulesForm(e) {
   const start = data.get('weekdayRangeStart');
   const end = data.get('weekdayRangeEnd');
   const existingRule = state.rules.weekdayRules.find((rule) => rule.id === editingWeekdayRuleId);
-  state.rules.restDays = restDays;
+  state.rules.restAfterNight = restAfterNight;
+  state.rules.restAfterDoubleNight = restAfterDoubleNight;
   state.rules.maxHoursWeek = maxWeek;
   state.rules.minFreeWeekends = Number.isFinite(minFreeWeekends) ? minFreeWeekends : undefined;
   state.rules.maxNights = maxNights;
@@ -2663,7 +2727,8 @@ function handleRulesForm(e) {
     ? vacationDefault
     : state.rules.vacationDefault;
   const limits = [
-    Number.isFinite(restDays) ? `${restDays} Ruhetage` : null,
+    Number.isFinite(restAfterNight) ? `${restAfterNight} Ruhetage nach Nacht` : null,
+    Number.isFinite(restAfterDoubleNight) ? `${restAfterDoubleNight} nach Doppelnacht` : null,
     Number.isFinite(maxWeek) ? `${maxWeek}h/Woche` : null,
     Number.isFinite(minFreeWeekends) ? `${minFreeWeekends} freie Wochenenden` : null,
     Number.isFinite(maxNights) ? `${maxNights} Nachtdienste` : null,
@@ -2733,7 +2798,90 @@ function toNumber(value) {
   return Number.isFinite(n) ? n : undefined;
 }
 
+function canEditRoster() {
+  return !!currentUser && (currentUser.permissions?.admin || currentUser.permissions?.roster === 'write');
+}
+
+function canManageTickets() {
+  return !!currentUser && (currentUser.permissions?.admin || currentUser.permissions?.tickets === 'edit');
+}
+
+function canCreateTickets() {
+  return !!currentUser && !!currentUser.permissions;
+}
+
+function applyPermissions() {
+  const loggedIn = !!currentUser;
+  if (appShell) appShell.hidden = !loggedIn;
+  if (logoutBtn) logoutBtn.hidden = !loggedIn;
+  if (loginForm) loginForm.classList.toggle('logged-in', loggedIn);
+  if (loginStatus) loginStatus.textContent = loggedIn
+      ? `Angemeldet als ${currentUser.name || currentUser.id}`
+      : 'Bitte einloggen.';
+  const admin = !!currentUser?.permissions?.admin;
+  const allowedScreens = admin ? null : new Set(['roster', 'ticketCreate', 'tickets']);
+  menuButtons.forEach((btn) => {
+    const allowed = loggedIn && (admin || allowedScreens.has(btn.dataset.target));
+    btn.disabled = !allowed;
+    btn.classList.toggle('disabled', !allowed);
+  });
+  if (!loggedIn) return;
+  const activeBtn = document.querySelector('.main-menu button.active');
+  const activeTarget = activeBtn?.dataset.target;
+  if (!admin && activeTarget && !allowedScreens.has(activeTarget)) {
+    showScreen('roster');
+  }
+  if (ticketForm) {
+    ticketForm.querySelectorAll('input, select, textarea, button').forEach((el) => {
+      el.disabled = !canCreateTickets();
+    });
+  }
+  const editRoster = canEditRoster();
+  rosterModeButtons.forEach((btn) => {
+    btn.disabled = !editRoster;
+  });
+  if (!editRoster) setRosterMode('view');
+  if (generateBtn) generateBtn.disabled = !editRoster;
+  if (clearBtn) clearBtn.disabled = !editRoster;
+  if (printPlanBtn) printPlanBtn.disabled = !loggedIn;
+  renderTickets();
+  renderRoster();
+}
+
+function handleLogin(event) {
+  event.preventDefault();
+  const userId = loginUser?.value?.trim();
+  const password = loginPassword?.value || '';
+  const entry = userId ? USERS[userId] : null;
+  if (!entry || entry.password !== password) {
+    if (loginStatus) loginStatus.textContent = 'Login fehlgeschlagen.';
+    showNotification('Fehler beim Login', 'error');
+    return;
+  }
+  currentUser = { id: userId, ...entry };
+  applyPermissions();
+  showScreen('roster');
+  showNotification('Login erfolgreich', 'success');
+}
+
+function handleLogout() {
+  currentUser = null;
+  if (loginPassword) loginPassword.value = '';
+  applyPermissions();
+  showNotification('Abgemeldet', 'success');
+}
+
 function showScreen(target) {
+  if (!currentUser) {
+    if (appShell) appShell.hidden = true;
+    return;
+  }
+  const admin = !!currentUser?.permissions?.admin;
+  const allowedScreens = admin ? null : new Set(['roster', 'ticketCreate', 'tickets']);
+  if (!admin && !allowedScreens.has(target)) {
+    showNotification('Keine Berechtigung für diesen Bereich', 'error');
+    return;
+  }
   menuButtons.forEach((btn) => btn.classList.toggle('active', btn.dataset.target === target));
   screens.forEach((panel) => {
     if (panel.dataset.screen === target) {
@@ -3309,15 +3457,30 @@ function hoursForEmployee(monthKey, empId) {
   return total;
 }
 
-function workedRecently(empId, day, restDays) {
-  if (!restDays) return false;
-  const monthKey = getMonthKey(currentMonth);
+function lastAssignmentInfo(empId, day, monthKey) {
   const assignments = state.assignments[monthKey]?.[empId] || {};
-  for (let i = 1; i <= restDays; i++) {
-    const prevDay = day - i;
-    if (assignments[prevDay]) return true;
+  for (let offset = 1; offset < day; offset++) {
+    const prevDay = day - offset;
+    const serviceId = assignments[prevDay];
+    if (serviceId) {
+      const service = state.services.find((s) => s.id === serviceId);
+      return { gap: offset - 1, service, serviceId };
+    }
   }
-  return false;
+  return { gap: Infinity, service: null, serviceId: null };
+}
+
+function countStreakForMonth(empId, day, predicate, monthKey) {
+  const assignments = state.assignments[monthKey]?.[empId] || {};
+  let streak = 0;
+  for (let i = day - 1; i >= 1; i--) {
+    const sid = assignments[i];
+    if (!sid) break;
+    const svc = state.services.find((s) => s.id === sid);
+    if (!svc || !predicate(svc, sid)) break;
+    streak++;
+  }
+  return streak;
 }
 
 function generateRoster() {
@@ -3380,18 +3543,8 @@ function generateRoster() {
     assignmentCounts.set(empId, (assignmentCounts.get(empId) || 0) + 1);
   };
 
-  const countConsecutiveAssignments = (empId, day, predicate) => {
-    const assignments = state.assignments[monthKey]?.[empId] || {};
-    let streak = 0;
-    for (let i = day - 1; i >= 1; i--) {
-      const sid = assignments[i];
-      if (!sid) break;
-      const svc = state.services.find((s) => s.id === sid);
-      if (!svc || !predicate(svc, sid)) break;
-      streak++;
-    }
-    return streak;
-  };
+  const countConsecutiveAssignments = (empId, day, predicate) =>
+    countStreakForMonth(empId, day, predicate, monthKey);
 
   const lastDayServiceGap = (empId, day) => {
     const assignments = state.assignments[monthKey]?.[empId] || {};
@@ -3417,53 +3570,54 @@ function generateRoster() {
     return true;
   };
 
+  const respectsRestAfterNights = (emp, day) => {
+    const { gap, service } = lastAssignmentInfo(emp.id, day, monthKey);
+    if (!service || !isNightService(service)) return true;
+    const nightStreak = countConsecutiveAssignments(emp.id, day, (svc) => isNightService(svc));
+    const requiredRest = nightStreak >= 2 ? rules.restAfterDoubleNight : rules.restAfterNight;
+    if (!requiredRest) return true;
+    return gap >= requiredRest;
+  };
+
+  const canAssign = (emp, day, service) => {
+    const currentDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
+    if (!isAvailableForDate(emp, currentDate, service)) return false;
+    const dayAssignments = state.assignments[monthKey][emp.id] || {};
+    const locked = state.locks[monthKey]?.[emp.id]?.[day];
+    const existing = dayAssignments[day];
+    if (locked || existing) return false;
+    const previousServiceId = dayAssignments[day - 1];
+    const previousService = previousServiceId ? state.services.find((s) => s.id === previousServiceId) : null;
+    const nextServiceId = dayAssignments[day + 1];
+    const nextService = nextServiceId ? state.services.find((s) => s.id === nextServiceId) : null;
+    const isNight = isNightService(service);
+    const hadNightYesterday = previousService && isNightService(previousService);
+    const hadDayYesterday = previousService && !isNightService(previousService);
+    if ((isNight && hadDayYesterday) || (!isNight && hadNightYesterday)) return false;
+    if (nextService && isNightService(nextService) !== isNightService(service)) return false;
+    const sameServiceStreak = countConsecutiveAssignments(emp.id, day, (svc, sid) => sid === service.id);
+    if (sameServiceStreak >= 4) return false;
+    const dayStreak = countConsecutiveAssignments(emp.id, day, (svc) => !isNightService(svc));
+    const nightStreak = countConsecutiveAssignments(emp.id, day, (svc) => isNightService(svc));
+    if (!isNight && dayStreak >= 4) return false;
+    if (isNight && nightStreak >= 2) return false;
+    if (isNight && !emp.doubleNights && nightStreak >= 1) return false;
+    if (!respectsRestAfterNights(emp, day)) return false;
+    return true;
+  };
+
   for (let day = 1; day <= days; day++) {
     const currentDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
     const servicesForDay = getRequiredServicesForDate(currentDate);
     for (const service of servicesForDay) {
       const candidates = rotated
         .filter((emp) => {
-          if (!isAvailableForDate(emp, currentDate, service)) return false;
-          const dayAssignments = state.assignments[monthKey][emp.id] || {};
-          const locked = state.locks[monthKey]?.[emp.id]?.[day];
-          const existing = dayAssignments[day];
-          if (locked || existing) return false;
-          const previousServiceId = dayAssignments[day - 1];
-          const previousService = previousServiceId
-            ? state.services.find((s) => s.id === previousServiceId)
-            : null;
-          const nextServiceId = dayAssignments[day + 1];
-          const nextService = nextServiceId ? state.services.find((s) => s.id === nextServiceId) : null;
-          const isNight = isNightService(service);
-          const hadNightYesterday = previousService && isNightService(previousService);
-          const hadDayYesterday = previousService && !isNightService(previousService);
-          if ((isNight && hadDayYesterday) || (!isNight && hadNightYesterday)) return false;
-          const sameServiceStreak = countConsecutiveAssignments(
-            emp.id,
-            day,
-            (svc, sid) => sid === service.id
-          );
-          if (sameServiceStreak >= 4) return false;
-          const dayStreak = countConsecutiveAssignments(emp.id, day, (svc) => !isNightService(svc));
-          const nightStreak = countConsecutiveAssignments(emp.id, day, (svc) => isNightService(svc));
-          if (!isNight && dayStreak >= 4) return false;
-          if (isNight && nightStreak >= 2) return false;
-          if (isNight && !emp.doubleNights && nightStreak >= 1) return false;
-          if (nextService && isNightService(nextService) !== isNightService(service)) return false;
-          return true;
+          return canAssign(emp, day, service);
         })
         .map((emp) => {
           const locked = state.locks[monthKey]?.[emp.id]?.[day];
           const existing = state.assignments[monthKey][emp.id]?.[day];
           if (locked || existing) return null;
-          if (rules.restDays && workedRecently(emp.id, day, rules.restDays)) return null;
-          if (isNightService(service) && !emp.doubleNights) {
-            const prev = state.assignments[monthKey][emp.id][day - 1];
-            if (prev) {
-              const prevService = state.services.find((s) => s.id === prev);
-              if (isNightService(prevService)) return null;
-            }
-          }
           const targetHours = monthlyTargetHours(emp, currentMonth);
           const projectedHours = hoursForEmployee(monthKey, emp.id) + serviceDuration(service);
           if (targetHours && projectedHours > targetHours + 20) return null;
@@ -3546,6 +3700,53 @@ function generateRoster() {
       }
     }
   }
+  const rebalanceRoster = () => {
+    const activeEmployees = state.employees.filter((e) => e.status !== 'exited');
+    const hoursMap = new Map();
+    activeEmployees.forEach((emp) => {
+      hoursMap.set(emp.id, {
+        target: monthlyTargetHours(emp, currentMonth) || 0,
+        current: hoursForEmployee(monthKey, emp.id),
+      });
+    });
+    const sortedReceivers = activeEmployees
+      .slice()
+      .sort((a, b) => (hoursMap.get(b.id).target - hoursMap.get(b.id).current) - (hoursMap.get(a.id).target - hoursMap.get(a.id).current));
+    sortedReceivers.forEach((receiver) => {
+      const receiverInfo = hoursMap.get(receiver.id);
+      let deficit = (receiverInfo.target || 0) - receiverInfo.current;
+      if (deficit <= 0) return;
+      for (let day = 1; day <= days && deficit > 0; day++) {
+        const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
+        if (isWeekend(date)) continue;
+        const receiverAssignments = state.assignments[monthKey][receiver.id] || {};
+        if (receiverAssignments[day]) continue;
+        const donors = activeEmployees
+          .filter((donor) => donor.id !== receiver.id)
+          .filter((donor) => (state.assignments[monthKey][donor.id] || {})[day])
+          .filter((donor) => (hoursMap.get(donor.id)?.current || 0) > (hoursMap.get(donor.id)?.target || 0));
+        donors.sort((a, b) => (hoursMap.get(b.id).current - hoursMap.get(b.id).target) - (hoursMap.get(a.id).current - hoursMap.get(a.id).target));
+        for (const donor of donors) {
+          const donorAssignments = state.assignments[monthKey][donor.id] || {};
+          const serviceId = donorAssignments[day];
+          const service = state.services.find((s) => s.id === serviceId);
+          if (!service) continue;
+          if (state.locks[monthKey]?.[donor.id]?.[day] || state.locks[monthKey]?.[receiver.id]?.[day]) continue;
+          const projectedReceiver = receiverInfo.current + serviceDuration(service);
+          if (receiverInfo.target && projectedReceiver > receiverInfo.target + 4) continue;
+          if (!canAssign(receiver, day, service)) continue;
+          delete donorAssignments[day];
+          state.assignments[monthKey][receiver.id] = receiverAssignments;
+          receiverAssignments[day] = serviceId;
+          receiverInfo.current = projectedReceiver;
+          hoursMap.get(donor.id).current -= serviceDuration(service);
+          deficit = (receiverInfo.target || 0) - receiverInfo.current;
+          break;
+        }
+      }
+    });
+  };
+  rebalanceRoster();
   const label = currentMonth.toLocaleDateString('de-AT', { month: 'long', year: 'numeric' });
   state.layout.generatorPivot = rotated.length ? (pivot + 1) % rotated.length : 0;
   appendLog('roster', `Dienstplan für ${label} generiert.`);
@@ -3655,6 +3856,10 @@ function handleEmploymentPickerChange() {
 
 function handleTicketSubmit(event) {
   event.preventDefault();
+  if (!canCreateTickets()) {
+    showNotification('Keine Berechtigung zum Erstellen', 'error');
+    return;
+  }
   autoFillTicketReporterEmail(true);
   const name = (ticketNameInput?.value || '').trim();
   const priority = ticketPriorityInput?.value || TICKET_PRIORITIES[1];
@@ -3705,6 +3910,10 @@ function handleTicketFilterChange() {
 function handleTicketCardAction(event) {
   const button = event.target.closest('button[data-ticket-submit]');
   if (!button) return;
+  if (!canManageTickets()) {
+    showNotification('Keine Berechtigung zum Aktualisieren', 'error');
+    return;
+  }
   const ticketId = button.dataset.ticketSubmit;
   const ticket = state.tickets.find((t) => t.id === ticketId);
   if (!ticket) return;
@@ -3755,6 +3964,8 @@ function handleTicketCardAction(event) {
 }
 
 function wireEvents() {
+  if (loginForm) loginForm.addEventListener('submit', handleLogin);
+  if (logoutBtn) logoutBtn.addEventListener('click', handleLogout);
   menuButtons.forEach((btn) => btn.addEventListener('click', () => showScreen(btn.dataset.target)));
   employeeForm.addEventListener('submit', handleEmployeeForm);
   employeeForm.addEventListener('reset', handleEmployeeFormReset);
@@ -3802,14 +4013,21 @@ function wireEvents() {
     }
   });
   generateBtn.addEventListener('click', () => {
+    if (!canEditRoster()) {
+      showNotification('Keine Berechtigung zum Generieren', 'error');
+      return;
+    }
     if (confirm('Dienstplan automatisch generieren?')) {
       generateRoster();
       showNotification('Dienstplan erfolgreich generiert', 'success');
     }
   });
-  const clearBtn = document.getElementById('clearPlan');
   if (clearBtn) {
     clearBtn.addEventListener('click', () => {
+      if (!canEditRoster()) {
+        showNotification('Keine Berechtigung', 'error');
+        return;
+      }
       if (confirm('Dienstplan-Einträge für diesen Monat leeren? Urlaube, Krankenstände und gesperrte Tage bleiben erhalten.')) {
         clearRosterAssignments();
         showNotification('Dienstplan bereinigt', 'success');
@@ -3878,7 +4096,7 @@ function handlePrintPlan() {
 function init() {
   applyTheme(currentTheme);
   updateDropdowns();
-  showScreen('roster');
+  if (loginStatus) loginStatus.textContent = 'Bitte einloggen.';
   if (employeeExitBtn) employeeExitBtn.disabled = true;
   updateExitedEmployees();
   renderEmployees();
@@ -3892,6 +4110,7 @@ function init() {
   updateVacationReasonVisibility();
   renderTickets();
   wireEvents();
+  applyPermissions();
 }
 
 if (typeof window !== 'undefined') {
