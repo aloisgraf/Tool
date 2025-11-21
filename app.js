@@ -21,6 +21,13 @@ const uuid = () => {
   return hasCrypto ? crypto.randomUUID() : `id-${Math.random().toString(16).slice(2)}-${Date.now()}`;
 };
 
+function generateTicketNumber() {
+  const now = new Date();
+  const datePart = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  const timePart = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+  return `T-${datePart}-${timePart}-${Math.random().toString(16).slice(2, 6).toUpperCase()}`;
+}
+
 const clone = (value) =>
   typeof structuredClone === 'function' ? structuredClone(value) : JSON.parse(JSON.stringify(value));
 
@@ -333,6 +340,7 @@ let draggingRowId = null;
 let rosterMode = 'edit';
 let modeBeforePrint = null;
 let currentTheme = localStorage.getItem(THEME_STORAGE_KEY) || 'dark';
+let editingWeekdayRuleId = currentWeekdayRule()?.id || null;
 
 function loadState() {
   const employment = loadArray(STORAGE_KEYS.employmentTypes, DEFAULT_EMPLOYMENT);
@@ -465,6 +473,7 @@ function normalizeTickets(tickets = []) {
       const priority = TICKET_PRIORITIES.includes(ticket.priority) ? ticket.priority : TICKET_PRIORITIES[1];
       return {
         id: ticket.id || uuid(),
+        ticketNumber: ticket.ticketNumber || generateTicketNumber(),
         name: ticket.name,
         priority,
         description: ticket.description || '',
@@ -472,6 +481,7 @@ function normalizeTickets(tickets = []) {
         reporterName: ticket.reporterName || 'Alois Reichsöllner',
         reporterEmail: typeof ticket.reporterEmail === 'string' ? ticket.reporterEmail : '',
         createdAt: parseISODate(ticket.createdAt) ? ticket.createdAt : new Date().toISOString(),
+        assignee: ticket.assignee || '',
         updates: Array.isArray(ticket.updates)
           ? ticket.updates
               .map((entry) => {
@@ -765,6 +775,7 @@ function importState(json) {
       tickets,
     };
     weekdaySelections = ensureWeekdaySelections(currentWeekdayRule()?.services || {}, state.services);
+    editingWeekdayRuleId = currentWeekdayRule()?.id || null;
     cleanEmployeeGroups(state.employees, state.groups);
     updateExitedEmployees(false);
     editing.employee = null;
@@ -1900,11 +1911,16 @@ function renderWeekdayLists() {
       container.innerHTML = '<span class="weekday-placeholder muted">Keine Dienste hinterlegt</span>';
       return;
     }
-    container.innerHTML = list
-      .map((id) => {
+    const counts = list.reduce((map, id) => {
+      map[id] = (map[id] || 0) + 1;
+      return map;
+    }, {});
+    container.innerHTML = Object.entries(counts)
+      .map(([id, count]) => {
         const service = state.services.find((s) => s.id === id);
         if (!service) return '';
-        return `<span class="weekday-chip">${service.name}<button type="button" data-remove-service="${id}" aria-label="${service.name} entfernen">×</button></span>`;
+        const badge = count > 1 ? `<span class="weekday-count">×${count}</span>` : '';
+        return `<span class="weekday-chip">${service.name}${badge}<button type="button" data-remove-service="${id}" aria-label="${service.name} entfernen">×</button></span>`;
       })
       .join('');
   });
@@ -1922,6 +1938,7 @@ function renderWeekdayHistory() {
     weekdayHistory.innerHTML = '<p class="muted">Noch keine Einträge.</p>';
     return;
   }
+  const activeRule = state.rules.weekdayRules.find((rule) => rule.id === editingWeekdayRuleId) || currentWeekdayRule();
   const sorted = rules
     .slice()
     .sort((a, b) => (a.start || '').localeCompare(b.start || ''));
@@ -1942,13 +1959,16 @@ function renderWeekdayHistory() {
       })
         .filter(Boolean)
         .join('');
+      const activeLabel = activeRule?.id === rule.id ? '<span class="chip">Aktiv</span>' : '';
       return `
         <div class="item">
           <div>
             <strong>${range}</strong>
             ${services || '<small class="muted">Keine Dienste definiert</small>'}
+            ${activeLabel}
           </div>
           <div class="entry-actions">
+            <button type="button" class="ghost" data-edit-weekday-rule="${rule.id}">Bearbeiten</button>
             <button type="button" class="ghost" data-delete-weekday-rule="${rule.id}">Entfernen</button>
           </div>
         </div>`;
@@ -1967,10 +1987,8 @@ function setupWeekdayInteractions() {
         const value = select.value;
         if (!value) return;
         if (!weekdaySelections[weekday]) weekdaySelections[weekday] = [];
-        if (!weekdaySelections[weekday].includes(value)) {
-          weekdaySelections[weekday].push(value);
-          renderWeekdayLists();
-        }
+        weekdaySelections[weekday].push(value);
+        renderWeekdayLists();
         select.value = '';
       });
     }
@@ -1979,7 +1997,12 @@ function setupWeekdayInteractions() {
         const base = event.target instanceof Element ? event.target.closest('[data-remove-service]') : null;
         if (!base) return;
         const toRemove = base.dataset.removeService;
-        weekdaySelections[weekday] = (weekdaySelections[weekday] || []).filter((id) => id !== toRemove);
+        const current = weekdaySelections[weekday] || [];
+        const idx = current.indexOf(toRemove);
+        if (idx !== -1) {
+          current.splice(idx, 1);
+          weekdaySelections[weekday] = current;
+        }
         renderWeekdayLists();
       });
     }
@@ -1990,9 +2013,14 @@ function setupWeekdayInteractions() {
 }
 
 function handleWeekdayHistoryClick(event) {
-  const button = event.target instanceof Element ? event.target.closest('[data-delete-weekday-rule]') : null;
-  if (!button) return;
-  const id = button.dataset.deleteWeekdayRule;
+  const editBtn = event.target instanceof Element ? event.target.closest('[data-edit-weekday-rule]') : null;
+  if (editBtn) {
+    loadWeekdayRuleForEdit(editBtn.dataset.editWeekdayRule);
+    return;
+  }
+  const deleteBtn = event.target instanceof Element ? event.target.closest('[data-delete-weekday-rule]') : null;
+  if (!deleteBtn) return;
+  const id = deleteBtn.dataset.deleteWeekdayRule;
   if (!id) return;
   if (!confirm('Diesen Pflichtdienst-Zeitraum wirklich löschen?')) return;
   state.rules.weekdayRules = (state.rules.weekdayRules || []).filter((rule) => rule.id !== id);
@@ -2000,6 +2028,7 @@ function handleWeekdayHistoryClick(event) {
     state.rules.weekdayRules = [createWeekdayRule({ services: ensureWeekdaySelections({}, state.services) })];
   }
   weekdaySelections = ensureWeekdaySelections(currentWeekdayRule()?.services || {}, state.services);
+  editingWeekdayRuleId = currentWeekdayRule()?.id || null;
   appendLog('rules', 'Pflichtdiensteintrag entfernt.', id);
   saveState();
   renderWeekdayHistory();
@@ -2015,9 +2044,11 @@ function renderRules() {
   if (form.minFreeWeekends) form.minFreeWeekends.value = r.minFreeWeekends ?? '';
   form.maxNights.value = r.maxNights ?? '';
   if (vacationDefaultInput) vacationDefaultInput.value = r.vacationDefault ?? '';
-  if (weekdayRangeStart) weekdayRangeStart.value = '';
-  if (weekdayRangeEnd) weekdayRangeEnd.value = '';
-  weekdaySelections = ensureWeekdaySelections(currentWeekdayRule()?.services || {}, state.services);
+  const activeRule = state.rules.weekdayRules.find((rule) => rule.id === editingWeekdayRuleId) || currentWeekdayRule();
+  editingWeekdayRuleId = activeRule?.id || editingWeekdayRuleId || null;
+  if (weekdayRangeStart) weekdayRangeStart.value = activeRule?.start || '';
+  if (weekdayRangeEnd) weekdayRangeEnd.value = activeRule?.end || '';
+  weekdaySelections = ensureWeekdaySelections(activeRule?.services || {}, state.services);
   renderWeekdayControls();
   renderWeekdayHistory();
   renderVacationLimitList();
@@ -2140,6 +2171,16 @@ function autoFillTicketReporterEmail(force = false) {
   }
 }
 
+function ticketPriorityIcon(priority) {
+  const map = {
+    hoch: { icon: '❗', className: 'priority-high' },
+    mittel: { icon: '❗', className: 'priority-medium' },
+    gering: { icon: '❗', className: 'priority-low' },
+  };
+  const entry = map[priority] || map.mittel;
+  return `<span class="ticket-priority-icon ${entry.className}" aria-hidden="true">${entry.icon}</span>`;
+}
+
 function renderTickets() {
   if (!ticketList) return;
   const filter = ticketStatusFilter?.value || 'all';
@@ -2169,11 +2210,17 @@ function renderTickets() {
       const statusOptions = TICKET_STATUSES.map(
         (status) => `<option value="${status}" ${ticket.status === status ? 'selected' : ''}>${status}</option>`
       ).join('');
+      const priorityIcon = ticketPriorityIcon(ticket.priority);
+      const closedIcon = ticket.status === 'Geschlossen' ? '<span class="status-icon success">✔</span>' : '';
+      const assignee = ticket.assignee ? `<small>Bearbeiter: ${escapeHtml(ticket.assignee)}</small>` : '';
       return `
         <article class="ticket-card" data-ticket-id="${ticket.id}">
           <div class="ticket-header">
             <div class="ticket-title-row">
-              <h3>${escapeHtml(ticket.name)}</h3>
+              <div class="ticket-title">
+                <small class="ticket-number">Ticket ${escapeHtml(ticket.ticketNumber || ticket.id)}</small>
+                <h3>${priorityIcon}${escapeHtml(ticket.name)}${closedIcon}</h3>
+              </div>
               <label class="ticket-status-control">Status
                 <select data-ticket-status="${ticket.id}">${statusOptions}</select>
               </label>
@@ -2184,6 +2231,7 @@ function renderTickets() {
               }</small>
               <small>Erstellt am ${created}</small>
               <small>Priorität: ${escapeHtml(ticket.priority)}</small>
+              ${assignee}
             </div>
           </div>
           <p class="ticket-desc">${escapeHtml(ticket.description || 'Keine Beschreibung')}</p>
@@ -2510,6 +2558,7 @@ function handleRulesForm(e) {
   const vacationDefault = toNumber(data.get('vacationDefault'));
   const start = data.get('weekdayRangeStart');
   const end = data.get('weekdayRangeEnd');
+  const existingRule = state.rules.weekdayRules.find((rule) => rule.id === editingWeekdayRuleId);
   state.rules.restDays = restDays;
   state.rules.maxHoursWeek = maxWeek;
   state.rules.minFreeWeekends = Number.isFinite(minFreeWeekends) ? minFreeWeekends : undefined;
@@ -2518,7 +2567,12 @@ function handleRulesForm(e) {
     ? vacationDefault
     : state.rules.vacationDefault;
   let message = 'Regelwerk aktualisiert.';
-  if (start) {
+  if (existingRule) {
+    existingRule.start = start || existingRule.start || '';
+    existingRule.end = end || existingRule.end || '';
+    existingRule.services = selections;
+    message = `Pflichtdienste ${existingRule.start ? 'ab ' + formatShortDate(existingRule.start) : ''} aktualisiert.`;
+  } else if (start) {
     state.rules.weekdayRules = state.rules.weekdayRules || [];
     const entry = {
       id: uuid(),
@@ -2528,6 +2582,7 @@ function handleRulesForm(e) {
     };
     state.rules.weekdayRules.push(entry);
     weekdaySelections = ensureWeekdaySelections(entry.services, state.services);
+    editingWeekdayRuleId = entry.id;
     if (weekdayRangeStart) weekdayRangeStart.value = '';
     if (weekdayRangeEnd) weekdayRangeEnd.value = '';
     message = `Pflichtdienste ab ${formatShortDate(start)} gespeichert.`;
@@ -2535,9 +2590,11 @@ function handleRulesForm(e) {
     const active = currentWeekdayRule();
     if (active) {
       active.services = selections;
+      editingWeekdayRuleId = active.id;
     }
   } else {
     state.rules.weekdayRules = [createWeekdayRule({ services: selections })];
+    editingWeekdayRuleId = state.rules.weekdayRules[0].id;
   }
   appendLog('rules', message, 'rules');
   saveState();
@@ -2546,6 +2603,18 @@ function handleRulesForm(e) {
   rulesForm.reset();
   renderRules();
   showNotification('Änderung erfolgreich gespeichert', 'success');
+}
+
+function loadWeekdayRuleForEdit(id) {
+  const target = state.rules.weekdayRules.find((rule) => rule.id === id);
+  if (!target) return;
+  editingWeekdayRuleId = target.id;
+  weekdaySelections = ensureWeekdaySelections(target.services || {}, state.services);
+  if (weekdayRangeStart) weekdayRangeStart.value = target.start || '';
+  if (weekdayRangeEnd) weekdayRangeEnd.value = target.end || '';
+  renderWeekdayControls();
+  renderWeekdayHistory();
+  renderRoster();
 }
 
 function toNumber(value) {
@@ -2568,6 +2637,9 @@ function showScreen(target) {
     renderTickets();
   } else if (target === 'ticketCreate') {
     autoFillTicketReporterEmail(true);
+  } else if (target === 'rules') {
+    editingWeekdayRuleId = currentWeekdayRule()?.id || editingWeekdayRuleId;
+    renderRules();
   }
 }
 
@@ -3272,6 +3344,35 @@ function generateRoster() {
   renderRoster();
 }
 
+function clearRosterAssignments() {
+  const monthKey = getMonthKey(currentMonth);
+  ensureMonthMaps(monthKey);
+  const days = daysInMonth(currentMonth);
+  state.employees.forEach((emp) => {
+    const monthAssignments = state.assignments[monthKey]?.[emp.id];
+    if (!monthAssignments) return;
+    for (let day = 1; day <= days; day++) {
+      const locked = state.locks[monthKey]?.[emp.id]?.[day];
+      const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
+      const vacationEntry = findVacationOnDate(emp, date);
+      const sickEntry = findSickOnDate(emp, date);
+      const keepAssignment =
+        locked ||
+        (vacationEntry && VACATION_TYPES[vacationEntry.type]?.clearsAssignments === false) ||
+        (sickEntry && SICK_TYPES[sickEntry.kind]?.clearsAssignments === false);
+      if (!keepAssignment) {
+        delete monthAssignments[day];
+      }
+    }
+    if (!Object.keys(monthAssignments).length) {
+      delete state.assignments[monthKey][emp.id];
+    }
+  });
+  appendLog('roster', 'Dienstplan für den Monat geleert.', monthKey);
+  saveState();
+  renderRoster();
+}
+
 function syncEmploymentHours() {
   employmentPercentSelect.addEventListener('change', () => {
     const selected = state.employment.find((e) => e.id === employmentPercentSelect.value);
@@ -3357,6 +3458,7 @@ function handleTicketSubmit(event) {
   }
   const ticket = {
     id: uuid(),
+    ticketNumber: generateTicketNumber(),
     name,
     priority: TICKET_PRIORITIES.includes(priority) ? priority : TICKET_PRIORITIES[1],
     description,
@@ -3364,6 +3466,7 @@ function handleTicketSubmit(event) {
     reporterName: reporterName || 'Alois Reichsöllner',
     reporterEmail,
     createdAt: new Date().toISOString(),
+    assignee: '',
     updates: [
       {
         id: uuid(),
@@ -3403,14 +3506,24 @@ function handleTicketCardAction(event) {
   const status = statusSelect && TICKET_STATUSES.includes(statusSelect.value) ? statusSelect.value : ticket.status;
   const note = (noteField?.value || '').trim();
   const notify = !!notifyField?.checked;
+  const previousStatus = ticket.status;
   const entry = {
     id: uuid(),
     status,
-    note: note || (status !== ticket.status ? 'Status aktualisiert' : 'Aktualisiert'),
+    note:
+      note ||
+      (status === 'in Bearbeitung' && previousStatus !== 'in Bearbeitung'
+        ? 'Bearbeitung übernommen durch Hans Maier'
+        : status !== previousStatus
+          ? `Status geändert: ${previousStatus} → ${status}`
+          : 'Aktualisiert'),
     timestamp: new Date().toISOString(),
     notify,
   };
   ticket.status = status;
+  if (status === 'in Bearbeitung') {
+    ticket.assignee = 'Hans Maier';
+  }
   ticket.updates = [entry, ...(ticket.updates || [])].slice(0, 100);
   appendLog('tickets', `Ticket '${ticket.name}' auf '${status}' aktualisiert.`, ticket.id);
   saveState();
@@ -3478,6 +3591,15 @@ function wireEvents() {
       showNotification('Dienstplan erfolgreich generiert', 'success');
     }
   });
+  const clearBtn = document.getElementById('clearPlan');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      if (confirm('Dienstplan-Einträge für diesen Monat leeren? Urlaube, Krankenstände und gesperrte Tage bleiben erhalten.')) {
+        clearRosterAssignments();
+        showNotification('Dienstplan bereinigt', 'success');
+      }
+    });
+  }
   saveFileBtn.addEventListener('click', downloadStateFile);
   loadFileBtn.addEventListener('click', () => loadFileInput.click());
   loadFileInput.addEventListener('change', (e) => {
