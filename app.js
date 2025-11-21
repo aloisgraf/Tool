@@ -38,8 +38,13 @@ const DEFAULT_SERVICES = [
 ];
 
 const DEFAULT_FUNCTIONS = (services) => [
-  { id: uuid(), name: 'Disponent*in', serviceIds: services.filter((s) => s.name.toLowerCase().includes('d')).map((s) => s.id) },
-  { id: uuid(), name: 'Calltaker', serviceIds: services.filter((s) => s.name.toLowerCase().includes('c')).map((s) => s.id) },
+  {
+    id: uuid(),
+    name: 'Disponent*in',
+    serviceIds: services.filter((s) => s.name.toLowerCase().includes('d')).map((s) => s.id),
+    status: 'active',
+  },
+  { id: uuid(), name: 'Calltaker', serviceIds: services.filter((s) => s.name.toLowerCase().includes('c')).map((s) => s.id), status: 'active' },
 ];
 
 const VACATION_TYPES = {
@@ -130,6 +135,29 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     sickLeaves: [],
     groupId: null,
     nightAllowed: false,
+    rkt: false,
+    holidayFactor: 0,
+    dailyWorkHours: 8,
+    hireDate: '2023-01-01',
+    endDate: '',
+    doubleNights: false,
+    status: 'active',
+  },
+  {
+    id: uuid(),
+    firstName: 'Alois',
+    lastName: 'Reichsöllner',
+    personnelNumber: '1004',
+    birthday: '1985-11-03',
+    email: 'alois.reichsoellner@example.com',
+    employmentPercent: employment[0].id,
+    employmentHours: employment[0].id,
+    functionId: functions[0].id,
+    vacationDays: 25,
+    vacations: [],
+    sickLeaves: [],
+    groupId: null,
+    nightAllowed: true,
     rkt: false,
     holidayFactor: 0,
     dailyWorkHours: 8,
@@ -396,6 +424,7 @@ function normalizeFunctions(functions = [], services = []) {
         serviceIds: Array.isArray(entry.serviceIds)
           ? entry.serviceIds.filter((id) => serviceIds.has(id))
           : [],
+        status: entry.status === 'removed' ? 'removed' : 'active',
       };
     })
     .filter(Boolean);
@@ -1301,6 +1330,26 @@ function allowedServicesForEmployee(emp, assigned) {
     .sort((a, b) => a.name.localeCompare(b.name, 'de', { sensitivity: 'base', numeric: true }));
 }
 
+function renderFunctionServiceChoices(selectedIds = []) {
+  if (!functionServices) return;
+  const selected = new Set(Array.isArray(selectedIds) ? selectedIds : []);
+  functionServices.innerHTML = state.services
+    .map(
+      (s) => `
+        <label>
+          <input type="checkbox" value="${s.id}" ${selected.has(s.id) ? 'checked' : ''}>
+          <span>${s.name}</span>
+          <small>${[s.start, s.end].filter(Boolean).join(' – ')}</small>
+        </label>`
+    )
+    .join('');
+}
+
+function selectedFunctionServiceIds() {
+  if (!functionServices) return [];
+  return Array.from(functionServices.querySelectorAll('input[type="checkbox"]:checked')).map((input) => input.value);
+}
+
 function updateDropdowns() {
   const prevEmployee = employeePicker.value;
   const prevService = servicePicker.value;
@@ -1308,8 +1357,15 @@ function updateDropdowns() {
   const prevEmployment = employmentPicker.value;
   employmentPercentSelect.innerHTML = state.employment.map((e) => `<option value="${e.id}">${e.percent}%</option>`).join('');
   employmentHoursSelect.innerHTML = state.employment.map((e) => `<option value="${e.id}">${e.hours} Std.</option>`).join('');
-  functionSelect.innerHTML = '<option value="">Keine Funktion</option>' + state.functions.map((f) => `<option value="${f.id}">${f.name}</option>`).join('');
-  functionServices.innerHTML = state.services.map((s) => `<option value="${s.id}">${s.name} (${s.start}–${s.end})</option>`).join('');
+  functionSelect.innerHTML =
+    '<option value="">Keine Funktion</option>' +
+    state.functions
+      .map((f) => {
+        const label = f.status === 'removed' ? `${f.name} (Entfernt)` : f.name;
+        const disabled = f.status === 'removed' ? ' disabled' : '';
+        return `<option value="${f.id}"${disabled}>${label}</option>`;
+      })
+      .join('');
   const employeeOptions = state.employees
     .map((e) => `<option value="${e.id}">${e.lastName}, ${e.firstName}${e.status === 'exited' ? ' (Ausgeschieden)' : ''}</option>`)
     .join('');
@@ -1318,7 +1374,7 @@ function updateDropdowns() {
     .concat(state.services.map((s) => `<option value="${s.id}">${s.name}</option>`))
     .join('');
   functionPicker.innerHTML = ['<option value="">Neu anlegen</option>']
-    .concat(state.functions.map((f) => `<option value="${f.id}">${f.name}</option>`))
+    .concat(state.functions.map((f) => `<option value="${f.id}">${f.name}${f.status === 'removed' ? ' (Entfernt)' : ''}</option>`))
     .join('');
   employmentPicker.innerHTML = ['<option value="">Neu anlegen</option>']
     .concat(state.employment.map((e) => `<option value="${e.id}">${e.percent}% · ${e.hours} Std</option>`))
@@ -1327,6 +1383,8 @@ function updateDropdowns() {
   if (prevService && state.services.some((s) => s.id === prevService)) servicePicker.value = prevService;
   if (prevFunction && state.functions.some((f) => f.id === prevFunction)) functionPicker.value = prevFunction;
   if (prevEmployment && state.employment.some((e) => e.id === prevEmployment)) employmentPicker.value = prevEmployment;
+  const selectedFunction = state.functions.find((f) => f.id === editing.function);
+  renderFunctionServiceChoices(selectedFunction?.serviceIds || []);
   updateGroupPicker();
 }
 
@@ -1372,17 +1430,20 @@ function renderEmployees() {
 
   const active = state.employees.filter((emp) => emp.status !== 'exited');
   const exited = state.employees.filter((emp) => emp.status === 'exited');
-  const renderSection = (title, list, emptyText) =>
-    `<div class="employee-section">
-      <h4>${title}</h4>
-      ${list.length ? list.map(renderCard).join('') : `<p class="muted">${emptyText}</p>`}
-    </div>`;
+  const renderSection = (title, list, emptyText, open = false) => `
+    <details class="collapsible" ${open ? 'open' : ''}>
+      <summary>${title} (${list.length})</summary>
+      <div class="employee-section">
+        ${list.length ? list.map(renderCard).join('') : `<p class=\"muted\">${emptyText}</p>`}
+      </div>
+    </details>`;
 
   employeeList.innerHTML = [
-    renderSection('Aktive Mitarbeiter', active, 'Noch keine aktiven Mitarbeiter.'),
+    renderSection('Aktive Mitarbeiter', active, 'Noch keine aktiven Mitarbeiter.', true),
     renderSection('Ausgeschieden', exited, 'Keine ausgeschiedenen Mitarbeiter.'),
   ].join('');
   renderOpenSickList();
+  autoFillTicketReporterEmail();
 }
 
 function renderDetailsSection(label, data) {
@@ -1766,17 +1827,38 @@ function renderFunctions() {
     functionList.innerHTML = '<p class="muted">Noch keine Funktionen angelegt.</p>';
     return;
   }
-  functionList.innerHTML = state.functions
-    .map((f) => {
-      const ids = Array.isArray(f.serviceIds) ? f.serviceIds : [];
-      const names = ids.map((id) => state.services.find((s) => s.id === id)?.name || '').filter(Boolean).join(', ');
-      return `
-        <div class="item">
-          <div><strong>${f.name}</strong><br><small>Dienste: ${names || 'Keine'}</small></div>
-          ${renderLogDetails('functions', f.id)}
-        </div>`;
-    })
-    .join('');
+  const active = state.functions.filter((f) => f.status !== 'removed');
+  const archived = state.functions.filter((f) => f.status === 'removed');
+  const renderEntry = (f) => {
+    const ids = Array.isArray(f.serviceIds) ? f.serviceIds : [];
+    const chips = ids
+      .map((id) => renderServiceChip(state.services.find((s) => s.id === id)))
+      .filter(Boolean)
+      .join(' ');
+    const statusPill = f.status === 'removed' ? '<span class="status-pill danger">Entfernt</span>' : '';
+    return `
+      <div class="item">
+        <div class="employee-card__title-row">
+          <strong>${f.name}</strong>${statusPill}
+        </div>
+        <div class="entry-actions">
+          <button type="button" class="ghost" data-function-edit="${f.id}">Bearbeiten</button>
+          ${
+            f.status === 'removed'
+              ? `<button type="button" class="ghost" data-function-restore="${f.id}">Wiederherstellen</button>`
+              : `<button type="button" class="ghost danger" data-function-archive="${f.id}">Entfernen</button>`
+          }
+        </div>
+        <div class="service-line">${chips || '<small class="muted">Keine Dienste zugewiesen</small>'}</div>
+        ${renderLogDetails('functions', f.id)}
+      </div>`;
+  };
+  const renderSection = (title, list, open = false) => `
+    <details class="collapsible" ${open ? 'open' : ''}>
+      <summary>${title} (${list.length})</summary>
+      <div class="employee-section">${list.length ? list.map(renderEntry).join('') : '<p class="muted">Keine Einträge.</p>'}</div>
+    </details>`;
+  functionList.innerHTML = [renderSection('Aktive Funktionen', active, true), renderSection('Entfernt', archived)].join('');
 }
 
 function renderEmployment() {
@@ -2037,6 +2119,27 @@ function renderOpenSickList() {
     .join('');
 }
 
+function findEmployeeByName(name) {
+  const normalized = (name || '').trim().toLowerCase();
+  if (!normalized) return null;
+  return state.employees.find(
+    (emp) => `${(emp.firstName || '').toLowerCase()} ${(emp.lastName || '').toLowerCase()}`.trim() === normalized
+  );
+}
+
+function autoFillTicketReporterEmail(force = false) {
+  if (!ticketReporterEmailInput || !ticketReporterInput) return;
+  if (ticketReporterEmailInput.value && !force) return;
+  const reporterName = ticketReporterInput.value || '';
+  const match =
+    findEmployeeByName(reporterName) ||
+    state.employees.find((emp) => emp.status !== 'exited' && emp.email) ||
+    state.employees.find((emp) => emp.email);
+  if (match?.email) {
+    ticketReporterEmailInput.value = match.email;
+  }
+}
+
 function renderTickets() {
   if (!ticketList) return;
   const filter = ticketStatusFilter?.value || 'all';
@@ -2068,29 +2171,31 @@ function renderTickets() {
       ).join('');
       return `
         <article class="ticket-card" data-ticket-id="${ticket.id}">
-          <div class="ticket-meta">
-            <span class="ticket-priority">${ticket.priority}</span>
-            <span class="ticket-status">${ticket.status}</span>
+          <div class="ticket-header">
+            <div class="ticket-title-row">
+              <h3>${escapeHtml(ticket.name)}</h3>
+              <label class="ticket-status-control">Status
+                <select data-ticket-status="${ticket.id}">${statusOptions}</select>
+              </label>
+            </div>
+            <div class="ticket-meta">
+              <small>Erstellt von ${escapeHtml(ticket.reporterName || 'Unbekannt')}${
+                ticket.reporterEmail ? ` (${escapeHtml(ticket.reporterEmail)})` : ''
+              }</small>
+              <small>Erstellt am ${created}</small>
+              <small>Priorität: ${escapeHtml(ticket.priority)}</small>
+            </div>
           </div>
-          <h3>${escapeHtml(ticket.name)}</h3>
           <p class="ticket-desc">${escapeHtml(ticket.description || 'Keine Beschreibung')}</p>
-          <p class="muted">Erstellt von ${escapeHtml(ticket.reporterName || 'Unbekannt')}${
-            ticket.reporterEmail ? ` (${escapeHtml(ticket.reporterEmail)})` : ''
-          }</p>
-          <small class="muted">Erstellt: ${created}</small>
           <div class="ticket-actions">
-            <label>Status
-              <select data-ticket-status="${ticket.id}">${statusOptions}</select>
-            </label>
-            <label class="full-width">Aktualisierung
+            <label class="full-width update-note">Aktualisierung
               <textarea rows="3" data-ticket-note="${ticket.id}" placeholder="Kommentar oder Fortschritt ergänzen"></textarea>
             </label>
             <label class="checkbox inline">
               <input type="checkbox" data-ticket-notify="${ticket.id}"> Einmelder per Mail benachrichtigen
             </label>
             <div class="form-actions">
-              <button type="button" data-ticket-save="${ticket.id}">Speichern</button>
-              <button type="button" class="primary" data-ticket-send="${ticket.id}">Speichern &amp; senden</button>
+              <button type="button" class="primary" data-ticket-submit="${ticket.id}">Speichern</button>
             </div>
           </div>
           <div>
@@ -2100,6 +2205,20 @@ function renderTickets() {
         </article>`;
     })
     .join('');
+}
+
+function updateTicketActionLabel(card) {
+  if (!card) return;
+  const button = card.querySelector('button[data-ticket-submit]');
+  const notify = card.querySelector('input[data-ticket-notify]');
+  if (button) button.textContent = notify?.checked ? 'Speichern und Senden' : 'Speichern';
+}
+
+function handleTicketCardChange(event) {
+  const checkbox = event.target.closest('input[data-ticket-notify]');
+  if (!checkbox) return;
+  const card = checkbox.closest('[data-ticket-id]');
+  updateTicketActionLabel(card);
 }
 
 function renderServiceChip(service, options = {}) {
@@ -2144,9 +2263,7 @@ function fillFunctionForm(func) {
   const form = functionForm.elements;
   form.name.value = func.name || '';
   const selectedIds = Array.isArray(func.serviceIds) ? func.serviceIds : [];
-  Array.from(functionServices.options).forEach((opt) => {
-    opt.selected = selectedIds.includes(opt.value);
-  });
+  renderFunctionServiceChoices(selectedIds);
 }
 
 function fillEmploymentForm(entry) {
@@ -2280,8 +2397,9 @@ function handleFunctionForm(e) {
   e.preventDefault();
   const data = new FormData(functionForm);
   const isUpdate = !!editing.function;
-  const serviceIds = data.getAll('serviceIds');
-  const entry = { id: editing.function ?? uuid(), name: data.get('name').trim(), serviceIds };
+  const existing = isUpdate ? state.functions.find((f) => f.id === editing.function) : null;
+  const serviceIds = selectedFunctionServiceIds();
+  const entry = { id: editing.function ?? uuid(), name: data.get('name').trim(), serviceIds, status: existing?.status || 'active' };
 
   if (isUpdate) {
     if (!confirm('Wollen Sie die Änderungen wirklich speichern?')) return;
@@ -2298,12 +2416,60 @@ function handleFunctionForm(e) {
   renderFunctions();
   renderRoster();
   functionForm.reset();
-  Array.from(functionServices.options).forEach((opt) => {
-    opt.selected = false;
-  });
+  renderFunctionServiceChoices([]);
   editing.function = null;
   functionPicker.value = '';
   showNotification(isUpdate ? 'Änderung erfolgreich gespeichert' : 'Eintrag erfolgreich gespeichert', 'success');
+}
+
+function archiveFunction(id) {
+  const func = state.functions.find((f) => f.id === id);
+  if (!func || func.status === 'removed') return;
+  if (!confirm(`Funktion "${func.name}" wirklich entfernen?`)) return;
+  func.status = 'removed';
+  appendLog('functions', `Funktion ${func.name} entfernt.`, func.id);
+  if (editing.function === id) {
+    functionForm.reset();
+    renderFunctionServiceChoices([]);
+    editing.function = null;
+    functionPicker.value = '';
+  }
+  saveState();
+  updateDropdowns();
+  renderFunctions();
+  renderRoster();
+  showNotification('Änderung erfolgreich gespeichert', 'success');
+}
+
+function restoreFunction(id) {
+  const func = state.functions.find((f) => f.id === id);
+  if (!func || func.status !== 'removed') return;
+  func.status = 'active';
+  appendLog('functions', `Funktion ${func.name} wiederhergestellt.`, func.id);
+  saveState();
+  updateDropdowns();
+  renderFunctions();
+  renderRoster();
+  showNotification('Änderung erfolgreich gespeichert', 'success');
+}
+
+function handleFunctionListClick(event) {
+  const archiveBtn = event.target.closest('[data-function-archive]');
+  const restoreBtn = event.target.closest('[data-function-restore]');
+  const editBtn = event.target.closest('[data-function-edit]');
+  if (archiveBtn) {
+    archiveFunction(archiveBtn.dataset.functionArchive);
+    return;
+  }
+  if (restoreBtn) {
+    restoreFunction(restoreBtn.dataset.functionRestore);
+    return;
+  }
+  if (editBtn) {
+    const id = editBtn.dataset.functionEdit;
+    functionPicker.value = id;
+    handleFunctionPickerChange();
+  }
 }
 
 function handleEmploymentForm(e) {
@@ -2400,6 +2566,8 @@ function showScreen(target) {
     renderRoster();
   } else if (target === 'tickets') {
     renderTickets();
+  } else if (target === 'ticketCreate') {
+    autoFillTicketReporterEmail(true);
   }
 }
 
@@ -3151,9 +3319,7 @@ function handleFunctionPickerChange() {
   if (!id) {
     editing.function = null;
     functionForm.reset();
-    Array.from(functionServices.options).forEach((opt) => {
-      opt.selected = false;
-    });
+    renderFunctionServiceChoices([]);
     return;
   }
   const func = state.functions.find((f) => f.id === id);
@@ -3179,6 +3345,7 @@ function handleEmploymentPickerChange() {
 
 function handleTicketSubmit(event) {
   event.preventDefault();
+  autoFillTicketReporterEmail(true);
   const name = (ticketNameInput?.value || '').trim();
   const priority = ticketPriorityInput?.value || TICKET_PRIORITIES[1];
   const description = ticketDescriptionInput?.value || '';
@@ -3224,9 +3391,9 @@ function handleTicketFilterChange() {
 }
 
 function handleTicketCardAction(event) {
-  const button = event.target.closest('button[data-ticket-save], button[data-ticket-send]');
+  const button = event.target.closest('button[data-ticket-submit]');
   if (!button) return;
-  const ticketId = button.dataset.ticketSave || button.dataset.ticketSend;
+  const ticketId = button.dataset.ticketSubmit;
   const ticket = state.tickets.find((t) => t.id === ticketId);
   if (!ticket) return;
   const card = button.closest('[data-ticket-id]');
@@ -3249,9 +3416,10 @@ function handleTicketCardAction(event) {
   saveState();
   if (noteField) noteField.value = '';
   if (notifyField) notifyField.checked = false;
+  updateTicketActionLabel(card);
   renderTickets();
   showNotification('Änderung erfolgreich gespeichert', 'success');
-  if (button.dataset.ticketSend && notify && ticket.reporterEmail) {
+  if (notify && ticket.reporterEmail) {
     alert(
       `E-Mail an ${ticket.reporterName || 'Einmelder'} (${ticket.reporterEmail}):\n${ticket.name}\nStatus: ${status}\n${note || 'Kein zusätzlicher Text'}`
     );
@@ -3265,6 +3433,11 @@ function wireEvents() {
   if (employeeExitBtn) employeeExitBtn.addEventListener('click', handleEmployeeExit);
   serviceForm.addEventListener('submit', handleServiceForm);
   functionForm.addEventListener('submit', handleFunctionForm);
+  functionForm.addEventListener('reset', () => {
+    editing.function = null;
+    renderFunctionServiceChoices([]);
+  });
+  if (functionList) functionList.addEventListener('click', handleFunctionListClick);
   employmentForm.addEventListener('submit', handleEmploymentForm);
   rulesForm.addEventListener('submit', handleRulesForm);
   rosterTable.addEventListener('change', handleRosterChange);
@@ -3343,9 +3516,13 @@ function wireEvents() {
   if (ticketForm) ticketForm.addEventListener('reset', () => {
     if (ticketPriorityInput) ticketPriorityInput.value = 'mittel';
     if (ticketReporterInput) ticketReporterInput.value = 'Alois Reichsöllner';
+    autoFillTicketReporterEmail(true);
   });
   if (ticketStatusFilter) ticketStatusFilter.addEventListener('change', handleTicketFilterChange);
-  if (ticketList) ticketList.addEventListener('click', handleTicketCardAction);
+  if (ticketList) {
+    ticketList.addEventListener('click', handleTicketCardAction);
+    ticketList.addEventListener('change', handleTicketCardChange);
+  }
   syncEmploymentHours();
 }
 

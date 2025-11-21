@@ -250,9 +250,10 @@
           </div>
           <form id="functionForm" class="grid">
             <label>Funktionsname<input name="name" required></label>
-            <label>Dienste zuweisen
-              <select name="serviceIds" id="functionServices" multiple size="5"></select>
-            </label>
+            <fieldset class="inline-fieldset">
+              <legend>Dienste zuweisen</legend>
+              <div id="functionServices" class="chip-checklist"></div>
+            </fieldset>
             <div class="form-actions">
               <button type="submit" class="primary">Funktion speichern</button>
               <button type="reset" class="ghost">Felder leeren</button>
