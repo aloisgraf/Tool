@@ -4097,6 +4097,41 @@ function generateRoster() {
     return true;
   };
 
+  const fillRemainingServices = (monthDate) => {
+    const daysInTarget = daysInMonth(monthDate);
+    const monthKeyFill = getMonthKey(monthDate);
+
+    for (let day = 1; day <= daysInTarget; day++) {
+      const date = new Date(monthDate.getFullYear(), monthDate.getMonth(), day);
+      const remaining = remainingServicesForDay(day, monthKeyFill, date);
+      if (!remaining.length) continue;
+
+      for (const service of remaining) {
+        const candidates = getOrderedEmployees()
+          .filter((emp) => isEmployeeActiveOnDate(emp, date))
+          .sort((a, b) => hoursForEmployee(monthKeyFill, a.id) - hoursForEmployee(monthKeyFill, b.id));
+
+        for (const emp of candidates) {
+          if (state.locks[monthKeyFill]?.[emp.id]?.[day]) continue;
+          if (state.assignments[monthKeyFill]?.[emp.id]?.[day]) continue;
+          if (!employeeAllowedForService(emp, service)) continue;
+          if (!isAvailableForDate(emp, date, service)) continue;
+          if (!canAssign(emp, day, service, { allowSplitPattern: true, allowWeekendSolo: true, skipLookahead: true }))
+            continue;
+
+          if (!state.assignments[monthKeyFill][emp.id]) state.assignments[monthKeyFill][emp.id] = {};
+          state.assignments[monthKeyFill][emp.id][day] = service.id;
+          incrementCounts(emp.id, service.id, date);
+          if (isWeekend(date)) {
+            const weekendKey = weekendKeyForDate(date);
+            if (weekendKey) getWeekendSet(emp.id).add(weekendKey);
+          }
+          break;
+        }
+      }
+    }
+  };
+
   for (let day = 1; day <= days; day++) {
     const currentDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
     const servicesForDay = getRequiredServicesForDate(currentDate);
@@ -4118,7 +4153,8 @@ function generateRoster() {
             const existing = state.assignments[monthKey][emp.id]?.[day];
             if (locked || existing) return null;
             const targetHours = monthlyTargetHours(emp, currentMonth);
-            const projectedHours = hoursForEmployee(monthKey, emp.id) + serviceDuration(service);
+            const serviceHours = serviceDuration(service);
+            const projectedHours = hoursForEmployee(monthKey, emp.id) + serviceHours;
             const nextNights = countNights(monthKey, emp.id) + (isNightService(service) ? 1 : 0);
             if (rules.maxNights && nextNights > rules.maxNights) return null;
             const counts = getCounts(emp.id, service.id);
@@ -4199,9 +4235,8 @@ function generateRoster() {
 
             const target = monthlyTargetHours(emp, currentMonth);
             if (target > 0) {
-              const hours = projectedHours;
-              const diff = hours - target;
-              if (diff > 0) scoreAdjustments += diff * diff * 0.5; // leichter über Ziel möglich
+              const diff = projectedHours - target;
+              if (diff > 0) scoreAdjustments += diff * diff * 0.15; // leichte Strafe, nicht verhindern!
             }
 
             const score =
@@ -4310,6 +4345,8 @@ function generateRoster() {
     totalNightRequirements,
     totalHolidayRequirements,
   });
+
+  fillRemainingServices(currentMonth);
 
   const label = currentMonth.toLocaleDateString('de-AT', { month: 'long', year: 'numeric' });
   state.layout.generatorPivot = rotated.length ? (pivot + 1) % rotated.length : 0;
