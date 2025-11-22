@@ -1059,6 +1059,76 @@ textarea { resize: vertical; font: inherit; }
 .service-legend strong { font-weight: 600; color: var(--text); margin-right: .35rem; }
 .service-legend span { background: rgba(15, 23, 42, 0.85); padding: .25rem .5rem; border-radius: .65rem; border: 1px solid var(--border); }
 
+.mission-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.mission-card {
+  border: 1px solid var(--border-subtle, var(--border));
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: var(--panel-bg);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+}
+
+.mission-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.mission-card__title {
+  font-weight: 700;
+}
+
+.mission-card__subtitle {
+  color: var(--text-muted, var(--muted));
+  font-size: 0.9rem;
+}
+
+.mission-entries {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mission-entries li {
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle, var(--border));
+  border-radius: 10px;
+  background: var(--surface-muted, rgba(15, 23, 42, 0.3));
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mission-entries .muted {
+  width: 100%;
+  text-align: left;
+}
+
+.mission-actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.mission-controls {
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.mission-controls label {
+  min-width: 260px;
+}
+
 .roster-panel[data-mode='view'] select,
 .roster-panel[data-mode='view'] .lock { display: none; }
 .roster-panel[data-mode='view'] .cell { align-items: center; }

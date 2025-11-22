@@ -11,11 +11,26 @@ const STORAGE_KEYS = {
   logs: 'dienstplan_logs',
   vacationLimits: 'dienstplan_vacation_limits',
   tickets: 'dienstplan_tickets',
+  missionSettings: 'dienstplan_missions_settings',
 };
 
 const STORAGE_FILE_NAME = 'dienstplan_daten.json';
 const THEME_STORAGE_KEY = 'dienstplan_theme';
 const AREAS = ['Technik', 'Leitung', 'Ausbildung'];
+const DEFAULT_MISSION_SETTINGS = { endpoint: '' };
+const MISSION_VEHICLE_CODES = [
+  '10-101',
+  '10-102',
+  '10-103',
+  '10-104',
+  '10-105',
+  '10-106',
+  'Martin 1',
+  'Martin 6',
+  'Martin 10',
+  'C6',
+  'Alpin Heli 6',
+];
 
 const USERS = {
   '05475': { password: '1234', name: 'Admin', permissions: { roster: 'write', tickets: 'edit', admin: true } },
@@ -346,6 +361,11 @@ const ticketReporterEmailInput = document.getElementById('ticketReporterEmail');
 const ticketAreaInput = document.getElementById('ticketArea');
 const ticketStatusFilter = document.getElementById('ticketStatusFilter');
 const ticketList = document.getElementById('ticketList');
+const missionServiceUrlInput = document.getElementById('missionServiceUrl');
+const missionSaveBtn = document.getElementById('missionSave');
+const missionRefreshBtn = document.getElementById('missionRefresh');
+const missionStatus = document.getElementById('missionStatus');
+const missionList = document.getElementById('missionList');
 const rulesLog = document.getElementById('rulesLog');
 const employmentLog = document.getElementById('employmentLog');
 const servicesLog = document.getElementById('servicesLog');
@@ -361,6 +381,7 @@ const logElements = {
 
 let state = loadState();
 state.vacationLimits = Array.isArray(state.vacationLimits) ? state.vacationLimits : [];
+state.missionSettings = state.missionSettings || DEFAULT_MISSION_SETTINGS;
 let currentMonth = new Date();
 currentMonth.setDate(1);
 const editing = { employee: null, service: null, function: null, employment: null };
@@ -372,6 +393,9 @@ let modeBeforePrint = null;
 let currentTheme = localStorage.getItem(THEME_STORAGE_KEY) || 'dark';
 let editingWeekdayRuleId = currentWeekdayRule()?.id || null;
 let currentUser = null;
+let missionResults = new Map();
+let missionIntervalId = null;
+let lastMissionUpdate = null;
 
 function loadState() {
   const employment = loadArray(STORAGE_KEYS.employmentTypes, DEFAULT_EMPLOYMENT);
@@ -463,6 +487,7 @@ function loadState() {
   const logs = ensureLogs(loadValue(STORAGE_KEYS.logs, DEFAULT_LOGS));
   const vacationLimits = normalizeVacationLimits(loadValue(STORAGE_KEYS.vacationLimits, []));
   const tickets = normalizeTickets(loadArray(STORAGE_KEYS.tickets, []));
+  const missionSettings = loadValue(STORAGE_KEYS.missionSettings, DEFAULT_MISSION_SETTINGS);
   cleanEmployeeGroups(employees, sanitizedGroups);
   return {
     employment,
@@ -477,6 +502,7 @@ function loadState() {
     logs,
     vacationLimits,
     tickets,
+    missionSettings,
   };
 }
 
@@ -562,6 +588,127 @@ function normalizeEmployees(employees = [], groups = []) {
     };
     return normalized;
   });
+}
+
+function formatMissionTime(value) {
+  if (!value) return '';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+function setMissionStatus(message) {
+  if (missionStatus) missionStatus.textContent = message;
+}
+
+function renderMissionBoard() {
+  if (!missionList) return;
+  const cards = MISSION_VEHICLE_CODES.map((code) => {
+    const matches = missionResults.get(code) || [];
+    const items = matches.length
+      ? matches
+          .map(
+            (entry) => `
+              <li>
+                <span>${entry.number || 'Unbekannt'}</span>
+                <span class="mission-card__subtitle">${formatMissionTime(entry.time) || 'Keine Zeitangabe'}</span>
+              </li>
+            `
+          )
+          .join('')
+      : '<li><span class="muted">Kein aktueller Einsatz</span></li>';
+    return `
+      <article class="mission-card">
+        <div class="mission-card__header">
+          <span class="mission-card__title">${code}</span>
+          <span class="mission-card__subtitle">Einsatzmittel</span>
+        </div>
+        <ul class="mission-entries">${items}</ul>
+      </article>
+    `;
+  });
+  missionList.innerHTML = cards.join('');
+}
+
+function collectMissionMatches(data) {
+  const list = Array.isArray(data) ? data : Array.isArray(data?.missions) ? data.missions : [];
+  const map = new Map();
+  list.forEach((entry) => {
+    const vehicle = String(entry?.MissionTaskVehicleCode || entry?.missionTaskVehicleCode || '').toLowerCase();
+    if (!vehicle) return;
+    const missionNumber = entry?.MissionNumber || entry?.missionNumber || '';
+    const assignedTime =
+      entry?.MissionTaskAssignemdTime ||
+      entry?.MissionTaskAssignedTime ||
+      entry?.MissionTaskAssignmentTime ||
+      entry?.assignedTime ||
+      '';
+    MISSION_VEHICLE_CODES.forEach((code) => {
+      if (vehicle.includes(code.toLowerCase())) {
+        if (!map.has(code)) map.set(code, []);
+        map.get(code).push({ number: missionNumber || 'Unbekannt', time: assignedTime });
+      }
+    });
+  });
+  return map;
+}
+
+async function refreshMissionFeed(manual = false) {
+  const endpoint = (state.missionSettings?.endpoint || '').trim();
+  if (!endpoint) {
+    missionResults = new Map();
+    renderMissionBoard();
+    setMissionStatus('Bitte eine Service-URL hinterlegen.');
+    return;
+  }
+  setMissionStatus(manual ? 'Aktualisiere manuell…' : 'Aktualisiere…');
+  try {
+    const response = await fetch(endpoint, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    missionResults = collectMissionMatches(payload);
+    lastMissionUpdate = new Date();
+    renderMissionBoard();
+    const matchCount = Array.from(missionResults.values()).reduce((acc, arr) => acc + arr.length, 0);
+    const label = lastMissionUpdate.toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' });
+    setMissionStatus(
+      matchCount ? `Zuletzt aktualisiert: ${label} · ${matchCount} Treffer` : `Zuletzt aktualisiert: ${label} · keine Einsätze`
+    );
+  } catch (error) {
+    setMissionStatus(`Fehler beim Laden: ${error.message}`);
+  }
+}
+
+function stopMissionPolling() {
+  if (missionIntervalId) {
+    clearInterval(missionIntervalId);
+    missionIntervalId = null;
+  }
+}
+
+function startMissionPolling() {
+  if (!currentUser) return;
+  stopMissionPolling();
+  const endpoint = (state.missionSettings?.endpoint || '').trim();
+  if (!endpoint) {
+    refreshMissionFeed();
+    return;
+  }
+  refreshMissionFeed();
+  missionIntervalId = setInterval(refreshMissionFeed, 60000);
+}
+
+function syncMissionInputs() {
+  if (missionServiceUrlInput) missionServiceUrlInput.value = state.missionSettings?.endpoint || '';
+  renderMissionBoard();
+}
+
+function handleMissionSave() {
+  if (!missionServiceUrlInput) return;
+  state.missionSettings = { endpoint: missionServiceUrlInput.value.trim() };
+  saveState();
+  showNotification('Einsatz-Service gespeichert', 'success');
+  refreshMissionFeed(true);
 }
 
 function normalizeTickets(tickets = []) {
@@ -826,6 +973,7 @@ function saveState() {
     [STORAGE_KEYS.logs]: state.logs,
     [STORAGE_KEYS.vacationLimits]: state.vacationLimits,
     [STORAGE_KEYS.tickets]: state.tickets,
+    [STORAGE_KEYS.missionSettings]: state.missionSettings || DEFAULT_MISSION_SETTINGS,
   };
 
   Object.entries(storageEntries).forEach(([key, value]) => {
@@ -881,6 +1029,7 @@ function importState(json) {
       logs: ensureLogs(parsed.logs ?? DEFAULT_LOGS),
       vacationLimits: normalizeVacationLimits(parsed.vacationLimits),
       tickets,
+      missionSettings: parsed.missionSettings || DEFAULT_MISSION_SETTINGS,
     };
     weekdaySelections = ensureWeekdaySelections(currentWeekdayRule()?.services || {}, state.services);
     editingWeekdayRuleId = currentWeekdayRule()?.id || null;
@@ -2989,13 +3138,18 @@ function applyPermissions() {
     if (gate === 'tickets-create') allowed = canCreateTickets();
     el.hidden = !allowed;
   });
-  const allowedScreens = admin ? null : new Set(['roster', 'ticketCreate', 'tickets']);
+  const allowedScreens = admin ? null : new Set(['roster', 'ticketCreate', 'tickets', 'missions']);
   menuButtons.forEach((btn) => {
     const allowed = loggedIn && (admin || allowedScreens.has(btn.dataset.target));
     btn.disabled = !allowed;
     btn.classList.toggle('disabled', !allowed);
   });
-  if (!loggedIn) return;
+  if (!loggedIn) {
+    stopMissionPolling();
+    missionResults = new Map();
+    renderMissionBoard();
+    return;
+  }
   const activeBtn = document.querySelector('.main-menu button.active');
   const activeTarget = activeBtn?.dataset.target;
   if (!admin && activeTarget && !allowedScreens.has(activeTarget)) {
@@ -3015,6 +3169,8 @@ function applyPermissions() {
   if (printPlanBtn) printPlanBtn.disabled = !loggedIn;
   renderTickets();
   renderRoster();
+  syncMissionInputs();
+  startMissionPolling();
 }
 
 function handleLogin(event) {
@@ -3059,7 +3215,7 @@ function showScreen(target) {
     return;
   }
   const admin = !!currentUser?.permissions?.admin;
-  const allowedScreens = admin ? null : new Set(['roster', 'ticketCreate', 'tickets']);
+  const allowedScreens = admin ? null : new Set(['roster', 'ticketCreate', 'tickets', 'missions']);
   if (!admin && !allowedScreens.has(target)) {
     showNotification('Keine Berechtigung für diesen Bereich', 'error');
     return;
@@ -3081,6 +3237,8 @@ function showScreen(target) {
   } else if (target === 'rules') {
     editingWeekdayRuleId = currentWeekdayRule()?.id || editingWeekdayRuleId;
     renderRules();
+  } else if (target === 'missions') {
+    renderMissionBoard();
   }
 }
 
@@ -4914,6 +5072,8 @@ function wireEvents() {
     ticketList.addEventListener('click', handleTicketCardAction);
     ticketList.addEventListener('change', handleTicketCardChange);
   }
+  if (missionSaveBtn) missionSaveBtn.addEventListener('click', handleMissionSave);
+  if (missionRefreshBtn) missionRefreshBtn.addEventListener('click', () => refreshMissionFeed(true));
   syncEmploymentHours();
 }
 
@@ -4944,6 +5104,7 @@ function init() {
   renderLogs();
   updateVacationReasonVisibility();
   renderTickets();
+  renderMissionBoard();
   wireEvents();
   autoLoginDefaultUser();
   applyPermissions();

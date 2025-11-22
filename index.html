@@ -84,6 +84,17 @@
           </div>
         </div>
       </details>
+      <details class="menu-accordion" open>
+        <summary>
+          <span class="menu-icon" aria-hidden="true">🚑</span>
+          <span>Einsatzzeiten</span>
+        </summary>
+        <div class="menu-accordion__body">
+          <div class="menu-group__items">
+            <button type="button" data-target="missions">Einsatzzeiten</button>
+          </div>
+        </div>
+      </details>
     </nav>
 
     <div class="content-area">
@@ -560,6 +571,27 @@
         </div>
         <div class="admin-panel">
           <div id="ticketList" class="ticket-grid" aria-live="polite"></div>
+        </div>
+      </section>
+      <section class="panel admin" data-screen="missions" hidden>
+        <div class="panel__header">
+          <div>
+            <p class="eyebrow">Live-Daten</p>
+            <h2>Einsatzzeiten</h2>
+          </div>
+          <div class="filter-row mission-controls">
+            <label>Service-URL
+              <input id="missionServiceUrl" name="missionServiceUrl" type="url" placeholder="https://example.com/api/missions">
+            </label>
+            <div class="mission-actions">
+              <button type="button" id="missionSave" class="ghost">URL speichern</button>
+              <button type="button" id="missionRefresh" class="primary">Jetzt aktualisieren</button>
+            </div>
+          </div>
+        </div>
+        <div class="admin-panel">
+          <p id="missionStatus" class="muted" aria-live="polite">Keine Daten geladen.</p>
+          <div id="missionList" class="mission-grid" aria-live="polite"></div>
         </div>
       </section>
     </div>
