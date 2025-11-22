@@ -1455,6 +1455,21 @@ function allowedServicesForEmployee(emp, assigned) {
     .sort((a, b) => a.name.localeCompare(b.name, 'de', { sensitivity: 'base', numeric: true }));
 }
 
+function violatesMinBlock(emp, day, monthKey) {
+  const assignments = state.assignments?.[monthKey]?.[emp.id] || {};
+  const prev = assignments[day - 1];
+  const next = assignments[day + 1];
+
+  // Einzelner Arbeitstag ohne Anschluss vermeiden
+  if (!prev && !next) return true;
+
+  // Tag-Frei-Tag vermeiden
+  if (prev && !next) return true;
+  if (!prev && next) return true;
+
+  return false;
+}
+
 function renderFunctionServiceChoices(selectedIds = []) {
   if (!functionServices) return;
   const selected = new Set(Array.isArray(selectedIds) ? selectedIds : []);
@@ -3573,6 +3588,18 @@ function countNights(monthKey, empId) {
   }).length;
 }
 
+function countTotalAssignedNights(monthKey) {
+  return Object.values(state.assignments[monthKey] || {}).reduce((sum, entries) => {
+    return (
+      sum +
+      Object.values(entries || {}).filter((serviceId) => {
+        const service = state.services.find((s) => s.id === serviceId);
+        return isNightService(service);
+      }).length
+    );
+  }, 0);
+}
+
 function isNightService(service) {
   if (!service) return false;
   if (typeof service.isNight === 'boolean') return service.isNight;
@@ -4092,9 +4119,6 @@ function generateRoster() {
             if (locked || existing) return null;
             const targetHours = monthlyTargetHours(emp, currentMonth);
             const projectedHours = hoursForEmployee(monthKey, emp.id) + serviceDuration(service);
-            const nextHours = projectedHours;
-            // Mehr Überstunden tolerieren (bis +8h)
-            if (targetHours && nextHours > targetHours + 8) return null;
             const nextNights = countNights(monthKey, emp.id) + (isNightService(service) ? 1 : 0);
             if (rules.maxNights && nextNights > rules.maxNights) return null;
             const counts = getCounts(emp.id, service.id);
@@ -4131,6 +4155,7 @@ function generateRoster() {
               targetHours && day < 10 && currentHours / targetHours < 0.65 ? -2 : 0;
 
             const continuity = continuityPenalty(emp.id, day, service);
+            let scoreAdjustments = 0;
 
             const weekendPairGuard = (() => {
               if (options.allowWeekendSolo) return 0;
@@ -4161,6 +4186,24 @@ function generateRoster() {
               Math.abs(projectedCumulative - expectedCumulative) * 0.5 + segmentSpreadPenalty(emp.id, day, service);
             const holidayPriority = holidayOrSundayType(currentDate) ? holidayBalance : 0;
 
+            if (!service.isNight && violatesMinBlock(emp, day, monthKey)) {
+              scoreAdjustments += 999; // Sehr hohe Strafe
+            }
+
+            if (service.isNight) {
+              const remainingNights = totalNightRequirements - countTotalAssignedNights(monthKey);
+              if (remainingNights < rotated.length / 2) {
+                if (!emp.nightAllowed) scoreAdjustments += 500;
+              }
+            }
+
+            const target = monthlyTargetHours(emp, currentMonth);
+            if (target > 0) {
+              const hours = projectedHours;
+              const diff = hours - target;
+              if (diff > 0) scoreAdjustments += diff * diff * 0.5; // leichter über Ziel möglich
+            }
+
             const score =
               monthlyTargetDiff * 3.5 +
               shortTermBalance * 6 +
@@ -4173,7 +4216,8 @@ function generateRoster() {
               holidayPriority +
               continuity +
               randomNoise * 0.5 +
-              prioritiseEarlyDeficit;
+              prioritiseEarlyDeficit +
+              scoreAdjustments;
             return { emp, score, counts, projectedHours };
           })
           .filter(Boolean)
@@ -4373,7 +4417,7 @@ function optimizeRosterLocally(config) {
     totalHolidayRequirements
   );
 
-  const iterations = 800;
+  const iterations = 2000;
 
   for (let i = 0; i < iterations; i++) {
     const donor = employees[Math.floor(Math.random() * employees.length)];
@@ -4401,10 +4445,26 @@ function optimizeRosterLocally(config) {
     if (!isEmployeeActiveOnDate(receiver, date)) continue;
     if (findVacationOnDate(receiver, date) || findSickOnDate(receiver, date)) continue;
 
+    const movedDays = [];
+    const moveDay = (d) => {
+      if (d < 1 || d > days) return;
+      if (receiverAssignments[d]) return;
+      const sid = donorAssignments[d];
+      if (!sid) return;
+      movedDays.push({ day: d, serviceId: sid });
+      delete donorAssignments[d];
+      receiverAssignments[d] = sid;
+    };
+
     // Probeweise verschieben
-    delete donorAssignments[day];
+    moveDay(day);
+    if (Math.random() < 0.1) {
+      for (let offset = -1; offset <= 1; offset++) {
+        if (offset === 0) continue;
+        moveDay(day + offset);
+      }
+    }
     state.assignments[monthKey][donor.id] = donorAssignments;
-    receiverAssignments[day] = serviceId;
     state.assignments[monthKey][receiver.id] = receiverAssignments;
 
     // Harte Grenzen prüfen (Überstunden, max Nächte, max Wochenenden)
@@ -4412,8 +4472,10 @@ function optimizeRosterLocally(config) {
     const hoursReceiver = hoursForEmployee(monthKey, receiver.id);
     if (targetHoursReceiver && hoursReceiver > targetHoursReceiver + 8) {
       // revert
-      delete receiverAssignments[day];
-      donorAssignments[day] = serviceId;
+      movedDays.forEach(({ day: d, serviceId: sid }) => {
+        delete receiverAssignments[d];
+        donorAssignments[d] = sid;
+      });
       state.assignments[monthKey][donor.id] = donorAssignments;
       state.assignments[monthKey][receiver.id] = receiverAssignments;
       continue;
@@ -4423,8 +4485,10 @@ function optimizeRosterLocally(config) {
       const nightsReceiver = countNights(monthKey, receiver.id);
       if (nightsReceiver > rules.maxNights) {
         // revert
-        delete receiverAssignments[day];
-        donorAssignments[day] = serviceId;
+        movedDays.forEach(({ day: d, serviceId: sid }) => {
+          delete receiverAssignments[d];
+          donorAssignments[d] = sid;
+        });
         state.assignments[monthKey][donor.id] = donorAssignments;
         state.assignments[monthKey][receiver.id] = receiverAssignments;
         continue;
@@ -4449,8 +4513,10 @@ function optimizeRosterLocally(config) {
 
       if (countWorkedWeekends(receiver) > allowedWorkedWeekends) {
         // revert
-        delete receiverAssignments[day];
-        donorAssignments[day] = serviceId;
+        movedDays.forEach(({ day: d, serviceId: sid }) => {
+          delete receiverAssignments[d];
+          donorAssignments[d] = sid;
+        });
         state.assignments[monthKey][donor.id] = donorAssignments;
         state.assignments[monthKey][receiver.id] = receiverAssignments;
         continue;
@@ -4473,8 +4539,10 @@ function optimizeRosterLocally(config) {
       bestCost = newCost;
     } else {
       // Schlechter → Rückgängig machen
-      delete receiverAssignments[day];
-      donorAssignments[day] = serviceId;
+      movedDays.forEach(({ day: d, serviceId: sid }) => {
+        delete receiverAssignments[d];
+        donorAssignments[d] = sid;
+      });
       state.assignments[monthKey][donor.id] = donorAssignments;
       state.assignments[monthKey][receiver.id] = receiverAssignments;
     }
