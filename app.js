@@ -3771,6 +3771,38 @@ function generateRoster() {
     return segments.reduce((sum, value) => sum + Math.pow(value - avg, 2), 0) / segments.length;
   };
 
+  const forwardStreak = (empId, day, predicate) => {
+    const assignments = state.assignments[monthKey]?.[empId] || {};
+    let streak = 0;
+    for (let i = day; i <= days; i++) {
+      const sid = assignments[i];
+      if (!sid) break;
+      const svc = state.services.find((s) => s.id === sid);
+      if (!svc || !predicate(svc, sid)) break;
+      streak++;
+    }
+    return streak;
+  };
+
+  const isDayBlockedForRest = (emp, date) =>
+    !!findVacationOnDate(emp, date) || !!findSickOnDate(emp, date) || !!state.locks[monthKey]?.[emp.id]?.[date.getDate()];
+
+  const wouldCreateSplitDayPattern = (emp, day) => {
+    const assignments = state.assignments[monthKey]?.[emp.id] || {};
+    const prev1 = assignments[day - 1];
+    const prev2 = assignments[day - 2];
+    const next1 = assignments[day + 1];
+    const next2 = assignments[day + 2];
+    const datePrev1 = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day - 1);
+    const dateNext1 = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day + 1);
+    const prevBlocked = isDayBlockedForRest(emp, datePrev1);
+    const nextBlocked = isDayBlockedForRest(emp, dateNext1);
+    if (!prev1 && prev2 && !prevBlocked) return true;
+    if (!next1 && next2 && !nextBlocked) return true;
+    if (!prev1 && !next1 && (prev2 || next2)) return true;
+    return false;
+  };
+
   const continuityPenalty = (empId, day, service) => {
     const assignments = state.assignments[monthKey]?.[empId] || {};
     const prevServiceId = assignments[day - 1];
@@ -3783,6 +3815,45 @@ function generateRoster() {
     const prevEmpty = !prevServiceId;
     const nextEmpty = !nextServiceId;
     if (prevEmpty && nextEmpty) penalty += 0.5; // isolated single
+    if (wouldCreateSplitDayPattern(state.employees.find((e) => e.id === empId), day)) penalty += 6;
+    const backStreak = countConsecutiveAssignments(empId, day, () => true);
+    const frontStreak = forwardStreak(empId, day + 1, () => true);
+    const projectedBlock = backStreak + 1 + frontStreak;
+    if (projectedBlock >= 2 && projectedBlock <= 4) penalty -= 0.8;
+    if (backStreak >= 2) {
+      const gap = lastAssignmentInfo(empId, day, monthKey).gap;
+      if (gap < 2) penalty += 3; // encourage two days rest after blocks
+    }
+    if (!prevEmpty && !nextEmpty) penalty -= 0.4; // cohesive middle of block
+    return penalty;
+  };
+
+  const blockPatternPenalty = (emp, day, service) => {
+    const assignments = state.assignments[monthKey]?.[emp.id] || {};
+    const prev1 = assignments[day - 1];
+    const next1 = assignments[day + 1];
+    const prev2 = assignments[day - 2];
+    const next2 = assignments[day + 2];
+    let penalty = 0;
+    if (!prev1 && !next1) penalty += 2.5;
+    if (!prev1 && prev2) penalty += 4.5;
+    if (!next1 && next2) penalty += 4.5;
+    if (prev1 && next1) penalty -= 0.8;
+    const prevStreak = countConsecutiveAssignments(emp.id, day, () => true);
+    const forwardLen = forwardStreak(emp.id, day + 1, () => true);
+    const projectedBlock = prevStreak + 1 + forwardLen;
+    if (projectedBlock >= 2 && projectedBlock <= 4) penalty -= 1.5;
+    if (projectedBlock > 4) penalty += 2;
+    const gap = lastAssignmentInfo(emp.id, day, monthKey).gap;
+    if (prevStreak >= 2 && gap < 2) penalty += 3;
+    if (wouldCreateSplitDayPattern(emp, day)) penalty += 8;
+    const dow = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day).getDay();
+    if ((dow === 6 || dow === 0) && !(prev1 || next1)) penalty += 3;
+    if (dow === 6) {
+      const sunday = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day + 1);
+      const sundayServices = getRequiredServicesForDate(sunday);
+      if (sundayServices.some((s) => s.id === service.id) && !isAvailableForDate(emp, sunday, service)) penalty += 5;
+    }
     return penalty;
   };
 
@@ -3903,6 +3974,13 @@ function generateRoster() {
     if (isNight && !emp.doubleNights && nightStreak >= 1) return false;
     if (!respectsRestAfterNights(emp, day)) return false;
     if (!hasMinimumRestHours(emp, day, service)) return false;
+    if (wouldCreateSplitDayPattern(emp, day) && day > 2 && day < days - 1) return false;
+    if (currentDate.getDay() === 6) {
+      const sunday = new Date(currentDate.getFullYear(), currentDate.getMonth(), day + 1);
+      const sundayServices = getRequiredServicesForDate(sunday);
+      const needsPair = sundayServices.some((s) => s.id === service.id);
+      if (needsPair && !isAvailableForDate(emp, sunday, service)) return false;
+    }
     return true;
   };
 
@@ -3920,7 +3998,6 @@ function generateRoster() {
           if (locked || existing) return null;
           const targetHours = monthlyTargetHours(emp, currentMonth);
           const projectedHours = hoursForEmployee(monthKey, emp.id) + serviceDuration(service);
-          if (targetHours && projectedHours > targetHours + 20) return null;
           const nextNights = countNights(monthKey, emp.id) + (isNightService(service) ? 1 : 0);
           if (rules.maxNights && nextNights > rules.maxNights) return null;
           if (isWeekend(currentDate)) {
@@ -3939,7 +4016,9 @@ function generateRoster() {
           const monthlyTargetDiff = targetHours
             ? Math.abs(projectedHours - targetHours) / Math.max(targetHours, 1)
             : projectedHours * 0.01;
-          const shortTermBalance = Math.abs(projectedRecent - expectedRecent) + segmentSpreadPenalty(emp.id, day, service) * 0.25;
+          const blockPenalty = blockPatternPenalty(emp, day, service);
+          const shortTermBalance =
+            Math.abs(projectedRecent - expectedRecent) + segmentSpreadPenalty(emp.id, day, service) * 0.25 + blockPenalty;
           const currentNights = countNights(monthKey, emp.id);
           const projectedNights = currentNights + (isNightService(service) ? 1 : 0);
           const idealNights = totalNightRequirements / eligibleNightCount;
