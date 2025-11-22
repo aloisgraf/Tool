@@ -3756,6 +3756,36 @@ function generateRoster() {
     return Infinity;
   };
 
+  const segmentSpreadPenalty = (empId, day, service) => {
+    const assignments = state.assignments[monthKey]?.[empId] || {};
+    const segments = [0, 0, 0];
+    Object.entries(assignments).forEach(([d, sid]) => {
+      const svc = state.services.find((s) => s.id === sid);
+      if (!svc) return;
+      const segIndex = Math.min(2, Math.floor(((Number(d) - 1) / days) * 3));
+      segments[segIndex] += serviceDuration(svc);
+    });
+    const targetSeg = Math.min(2, Math.floor(((day - 1) / days) * 3));
+    segments[targetSeg] += serviceDuration(service);
+    const avg = segments.reduce((a, b) => a + b, 0) / segments.length || 0;
+    return segments.reduce((sum, value) => sum + Math.pow(value - avg, 2), 0) / segments.length;
+  };
+
+  const continuityPenalty = (empId, day, service) => {
+    const assignments = state.assignments[monthKey]?.[empId] || {};
+    const prevServiceId = assignments[day - 1];
+    const nextServiceId = assignments[day + 1];
+    const prevService = prevServiceId ? state.services.find((s) => s.id === prevServiceId) : null;
+    const nextService = nextServiceId ? state.services.find((s) => s.id === nextServiceId) : null;
+    let penalty = 0;
+    if (prevService && isNightService(prevService) !== isNightService(service)) penalty += 1.2;
+    if (nextService && isNightService(nextService) !== isNightService(service)) penalty += 0.8;
+    const prevEmpty = !prevServiceId;
+    const nextEmpty = !nextServiceId;
+    if (prevEmpty && nextEmpty) penalty += 0.5; // isolated single
+    return penalty;
+  };
+
   const countHolidayAssignments = (empId) => {
     if (countHolidayAssignmentsCache.has(empId)) return countHolidayAssignmentsCache.get(empId);
     const assignments = state.assignments[monthKey]?.[empId] || {};
@@ -3909,7 +3939,7 @@ function generateRoster() {
           const monthlyTargetDiff = targetHours
             ? Math.abs(projectedHours - targetHours) / Math.max(targetHours, 1)
             : projectedHours * 0.01;
-          const shortTermBalance = Math.abs(projectedRecent - expectedRecent);
+          const shortTermBalance = Math.abs(projectedRecent - expectedRecent) + segmentSpreadPenalty(emp.id, day, service) * 0.25;
           const currentNights = countNights(monthKey, emp.id);
           const projectedNights = currentNights + (isNightService(service) ? 1 : 0);
           const idealNights = totalNightRequirements / eligibleNightCount;
@@ -3931,6 +3961,8 @@ function generateRoster() {
           const prioritiseEarlyDeficit =
             targetHours && day < 10 && currentHours / targetHours < 0.65 ? -2 : 0;
 
+          const continuity = continuityPenalty(emp.id, day, service);
+
           const weekendPairGuard = (() => {
             const dow = currentDate.getDay();
             if (dow === 0) {
@@ -3939,9 +3971,11 @@ function generateRoster() {
                 return assignment === service.id;
               });
               if (saturdayHolder && saturdayHolder.id !== emp.id) return 40;
+              const saturdayAvailable = isAvailableForDate(emp, new Date(currentDate.getFullYear(), currentDate.getMonth(), day - 1), service);
+              if (!saturdayHolder && !saturdayAvailable) return 10;
             }
             if (dow === 6) {
-              const nextDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), day + 1);
+              const nextDate = new Date(currentDate.getFullYear(), currentMonth.getMonth(), day + 1);
               const sundayServices = getRequiredServicesForDate(nextDate);
               const needsPair = sundayServices.some((s) => s.id === service.id);
               if (needsPair && !isAvailableForDate(emp, nextDate, service)) return 15;
@@ -3949,7 +3983,8 @@ function generateRoster() {
             return 0;
           })();
 
-          const distributionPenalty = Math.abs(projectedCumulative - expectedCumulative) * 0.5;
+          const distributionPenalty =
+            Math.abs(projectedCumulative - expectedCumulative) * 0.5 + segmentSpreadPenalty(emp.id, day, service);
           const holidayPriority = isHolidayOrSunday(currentDate) ? holidayBalance : 0;
 
           const score =
@@ -3962,6 +3997,7 @@ function generateRoster() {
             distributionPenalty +
             weekendPairGuard +
             holidayPriority +
+            continuity +
             randomNoise * 0.5 +
             prioritiseEarlyDeficit;
           return { emp, score, counts, projectedHours };
