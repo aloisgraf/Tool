@@ -3707,6 +3707,46 @@ function generateRoster() {
   const countConsecutiveAssignments = (empId, day, predicate) =>
     countStreakForMonth(empId, day, predicate, monthKey);
 
+  const cumulativeServiceHours = (empId, untilDay) => {
+    const assignments = state.assignments[monthKey]?.[empId] || {};
+    let total = 0;
+    for (let i = 1; i <= untilDay; i++) {
+      const sid = assignments[i];
+      const svc = state.services.find((s) => s.id === sid);
+      if (svc) total += serviceDuration(svc);
+    }
+    return total;
+  };
+
+  const rollingHours = (empId, endDay, window = 5) => {
+    const start = Math.max(1, endDay - window + 1);
+    return cumulativeServiceHours(empId, endDay) - cumulativeServiceHours(empId, start - 1);
+  };
+
+  let totalNightRequirements = 0;
+  const eligibleCache = new Map();
+  const getEligibleCount = (service) => {
+    if (!service) return 0;
+    if (eligibleCache.has(service.id)) return eligibleCache.get(service.id);
+    const count = rotated.filter((emp) => {
+      const func = state.functions.find((f) => f.id === emp.functionId);
+      const allowed = Array.isArray(func?.serviceIds) && func.serviceIds.includes(service.id);
+      if (!allowed) return false;
+      if (isNightService(service) && !emp.nightAllowed) return false;
+      return true;
+    }).length;
+    eligibleCache.set(service.id, count || 0);
+    return count || 0;
+  };
+
+  for (let day = 1; day <= days; day++) {
+    const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
+    const services = getRequiredServicesForDate(date);
+    totalNightRequirements += services.filter((svc) => isNightService(svc)).length;
+  }
+
+  const eligibleNightCount = rotated.filter((emp) => emp.nightAllowed).length || 1;
+
   const lastDayServiceGap = (empId, day) => {
     const assignments = state.assignments[monthKey]?.[empId] || {};
     for (let i = day - 1; i >= 1; i--) {
@@ -3740,6 +3780,17 @@ function generateRoster() {
     return gap >= requiredRest;
   };
 
+  const hasMinimumRestHours = (emp, day, service) => {
+    const { gap, service: prevService } = lastAssignmentInfo(emp.id, day, monthKey);
+    if (!prevService) return true;
+    if (gap >= 1) return true;
+    const prevEnd = parseTime(prevService.end);
+    const start = parseTime(service.start);
+    if (!Number.isFinite(prevEnd) || !Number.isFinite(start)) return true;
+    const restHours = (24 - prevEnd + start + 24) % 24;
+    return restHours >= 11;
+  };
+
   const canAssign = (emp, day, service) => {
     const currentDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
     if (!isAvailableForDate(emp, currentDate, service)) return false;
@@ -3758,12 +3809,15 @@ function generateRoster() {
     if (nextService && isNightService(nextService) !== isNightService(service)) return false;
     const sameServiceStreak = countConsecutiveAssignments(emp.id, day, (svc, sid) => sid === service.id);
     if (sameServiceStreak >= 4) return false;
+    const anyStreak = countConsecutiveAssignments(emp.id, day, () => true);
+    if (anyStreak >= 5) return false;
     const dayStreak = countConsecutiveAssignments(emp.id, day, (svc) => !isNightService(svc));
     const nightStreak = countConsecutiveAssignments(emp.id, day, (svc) => isNightService(svc));
     if (!isNight && dayStreak >= 4) return false;
     if (isNight && nightStreak >= 2) return false;
     if (isNight && !emp.doubleNights && nightStreak >= 1) return false;
     if (!respectsRestAfterNights(emp, day)) return false;
+    if (!hasMinimumRestHours(emp, day, service)) return false;
     return true;
   };
 
@@ -3792,51 +3846,61 @@ function generateRoster() {
             }
           }
           const counts = getCounts(emp.id, service.id);
-          const diff = targetHours ? Math.abs(targetHours - projectedHours) : 0;
-          const overPenalty = targetHours && projectedHours > targetHours ? projectedHours - targetHours : 0;
-          const diversity = counts.service * 2 + counts.total * 0.5;
-          const prevAssignment = state.assignments[monthKey][emp.id]?.[day - 1];
-          const secondPrevAssignment = state.assignments[monthKey][emp.id]?.[day - 2];
-          const nextAssignment = state.assignments[monthKey][emp.id]?.[day + 1];
-          const continuityBonus = (prevAssignment ? -4 : 0) + (secondPrevAssignment ? -1 : 0) + (nextAssignment ? -2 : 0);
-          let blockPenalty = 0;
-          const isNight = isNightService(service);
-          if (!isNight) {
-            const dayStreak = countConsecutiveAssignments(emp.id, day, (svc) => !isNightService(svc));
-            if (dayStreak === 0) blockPenalty += 1;
-            if (dayStreak >= 2) blockPenalty -= 1;
-            const gap = lastDayServiceGap(emp.id, day);
-            if (gap !== null && gap > 2) blockPenalty += 2;
-          } else {
-            const nightStreak = countConsecutiveAssignments(emp.id, day, (svc) => isNightService(svc));
-            if (nightStreak === 0 && day <= 10) blockPenalty += 4;
-            else if (nightStreak === 0 && day <= 15) blockPenalty += 2;
-            if (nightStreak === 1 && emp.doubleNights) blockPenalty -= 2;
-          }
+          const recentHours = rollingHours(emp.id, Math.max(1, day - 1), 5);
+          const projectedRecent = recentHours + serviceDuration(service);
+          const expectedRecent = targetHours ? (targetHours / days) * Math.min(5, day) : 0;
+          const projectedCumulative = cumulativeServiceHours(emp.id, Math.max(1, day - 1)) + serviceDuration(service);
+          const expectedCumulative = targetHours ? (targetHours * day) / days : projectedCumulative;
+          const monthlyTargetDiff = targetHours
+            ? Math.abs(projectedHours - targetHours) / Math.max(targetHours, 1)
+            : projectedHours * 0.01;
+          const shortTermBalance = Math.abs(projectedRecent - expectedRecent);
+          const currentNights = countNights(monthKey, emp.id);
+          const projectedNights = currentNights + (isNightService(service) ? 1 : 0);
+          const idealNights = totalNightRequirements / eligibleNightCount;
+          const expectedNightsByDay = (idealNights * day) / days;
+          const nightBalance = Math.abs(projectedNights - expectedNightsByDay);
+          const weekendCount = getWeekendSet(emp.id).size + (isWeekend(currentDate) ? 1 : 0);
+          const expectedWeekends = allowedWorkedWeekends * (day / days);
+          const weekendBalance = Math.max(0, weekendCount - expectedWeekends);
+          const eligibleCount = getEligibleCount(service) || 1;
+          const qualificationScarcity = ((counts.service + 1) / eligibleCount) * 1.5;
+          const randomNoise = Math.random() * 0.2;
+          const currentHours = hoursForEmployee(monthKey, emp.id);
 
-          const weekendBlockPenalty = (() => {
+          const prioritiseEarlyDeficit =
+            targetHours && day < 10 && currentHours / targetHours < 0.65 ? -2 : 0;
+
+          const weekendPairGuard = (() => {
             const dow = currentDate.getDay();
             if (dow === 0) {
-              // Sunday should stick to Saturday assignment of the same service
               const saturdayHolder = state.employees.find((candidate) => {
                 const assignment = state.assignments[monthKey][candidate.id]?.[day - 1];
                 return assignment === service.id;
               });
-              if (saturdayHolder && saturdayHolder.id !== emp.id) return 50;
+              if (saturdayHolder && saturdayHolder.id !== emp.id) return 40;
             }
             if (dow === 6) {
               const nextDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), day + 1);
               const sundayServices = getRequiredServicesForDate(nextDate);
               const needsPair = sundayServices.some((s) => s.id === service.id);
-              if (needsPair) {
-                const availableSunday = isAvailableForDate(emp, nextDate, service);
-                if (!availableSunday) return 25;
-              }
+              if (needsPair && !isAvailableForDate(emp, nextDate, service)) return 15;
             }
             return 0;
           })();
 
-          const score = diff + overPenalty * 2 + diversity + continuityBonus + blockPenalty + weekendBlockPenalty;
+          const distributionPenalty = Math.abs(projectedCumulative - expectedCumulative) * 0.5;
+
+          const score =
+            monthlyTargetDiff * 3.5 +
+            shortTermBalance * 6 +
+            nightBalance * 8 +
+            weekendBalance * 4.5 +
+            qualificationScarcity * 7.5 +
+            distributionPenalty +
+            weekendPairGuard +
+            randomNoise * 0.5 +
+            prioritiseEarlyDeficit;
           return { emp, score, counts, projectedHours };
         })
         .filter(Boolean)
