@@ -3942,7 +3942,8 @@ function generateRoster() {
     return restHours >= 11;
   };
 
-  const canAssign = (emp, day, service) => {
+  const canAssign = (emp, day, service, opts = {}) => {
+    const { allowSplitPattern = false, allowWeekendSolo = false } = opts;
     const currentDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
     if (!isAvailableForDate(emp, currentDate, service)) return false;
     const dayAssignments = state.assignments[monthKey][emp.id] || {};
@@ -3974,8 +3975,8 @@ function generateRoster() {
     if (isNight && !emp.doubleNights && nightStreak >= 1) return false;
     if (!respectsRestAfterNights(emp, day)) return false;
     if (!hasMinimumRestHours(emp, day, service)) return false;
-    if (wouldCreateSplitDayPattern(emp, day) && day > 2 && day < days - 1) return false;
-    if (currentDate.getDay() === 6) {
+    if (!allowSplitPattern && wouldCreateSplitDayPattern(emp, day) && day > 2 && day < days - 1) return false;
+    if (!allowWeekendSolo && currentDate.getDay() === 6) {
       const sunday = new Date(currentDate.getFullYear(), currentDate.getMonth(), day + 1);
       const sundayServices = getRequiredServicesForDate(sunday);
       const needsPair = sundayServices.some((s) => s.id === service.id);
@@ -3988,105 +3989,119 @@ function generateRoster() {
     const currentDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
     const servicesForDay = getRequiredServicesForDate(currentDate);
     for (const service of servicesForDay) {
-      const candidates = rotated
-        .filter((emp) => {
-          return canAssign(emp, day, service);
-        })
-        .map((emp) => {
-          const locked = state.locks[monthKey]?.[emp.id]?.[day];
-          const existing = state.assignments[monthKey][emp.id]?.[day];
-          if (locked || existing) return null;
-          const targetHours = monthlyTargetHours(emp, currentMonth);
-          const projectedHours = hoursForEmployee(monthKey, emp.id) + serviceDuration(service);
-          const nextNights = countNights(monthKey, emp.id) + (isNightService(service) ? 1 : 0);
-          if (rules.maxNights && nextNights > rules.maxNights) return null;
-          if (isWeekend(currentDate)) {
-            const weekendKey = weekendKeyForDate(currentDate);
-            const set = getWeekendSet(emp.id);
-            if (weekendKey && !set.has(weekendKey) && set.size >= allowedWorkedWeekends) {
-              return null;
+      const buildCandidates = (options = {}) =>
+        rotated
+          .filter((emp) => {
+            if (isWeekend(currentDate) && !options.allowWeekendOverflow) {
+              const weekendKey = weekendKeyForDate(currentDate);
+              const set = getWeekendSet(emp.id);
+              if (weekendKey && !set.has(weekendKey) && set.size >= allowedWorkedWeekends) {
+                return false;
+              }
             }
-          }
-          const counts = getCounts(emp.id, service.id);
-          const recentHours = rollingHours(emp.id, Math.max(1, day - 1), 5);
-          const projectedRecent = recentHours + serviceDuration(service);
-          const expectedRecent = targetHours ? (targetHours / days) * Math.min(5, day) : 0;
-          const projectedCumulative = cumulativeServiceHours(emp.id, Math.max(1, day - 1)) + serviceDuration(service);
-          const expectedCumulative = targetHours ? (targetHours * day) / days : projectedCumulative;
-          const monthlyTargetDiff = targetHours
-            ? Math.abs(projectedHours - targetHours) / Math.max(targetHours, 1)
-            : projectedHours * 0.01;
-          const blockPenalty = blockPatternPenalty(emp, day, service);
-          const shortTermBalance =
-            Math.abs(projectedRecent - expectedRecent) + segmentSpreadPenalty(emp.id, day, service) * 0.25 + blockPenalty;
-          const currentNights = countNights(monthKey, emp.id);
-          const projectedNights = currentNights + (isNightService(service) ? 1 : 0);
-          const idealNights = totalNightRequirements / eligibleNightCount;
-          const expectedNightsByDay = (idealNights * day) / days;
-          const nightBalance = Math.abs(projectedNights - expectedNightsByDay);
-          const weekendCount = getWeekendSet(emp.id).size + (isWeekend(currentDate) ? 1 : 0);
-          const expectedWeekends = allowedWorkedWeekends * (day / days);
-          const weekendBalance = Math.abs(weekendCount - expectedWeekends);
-          const holidayCount = countHolidayAssignments(emp.id);
-          const projectedHolidays = holidayCount + (isHolidayOrSunday(currentDate) ? 1 : 0);
-          const idealHolidays = totalHolidayRequirements / Math.max(1, eligibleHolidayCount);
-          const expectedHolidaysByDay = idealHolidays ? (idealHolidays * day) / days : 0;
-          const holidayBalance = idealHolidays ? Math.abs(projectedHolidays - expectedHolidaysByDay) : 0;
-          const eligibleCount = getEligibleCount(service) || 1;
-          const qualificationScarcity = counts.service / Math.max(1, eligibleCount);
-          const randomNoise = Math.random() * 0.2;
-          const currentHours = hoursForEmployee(monthKey, emp.id);
+            return canAssign(emp, day, service, options);
+          })
+          .map((emp) => {
+            const locked = state.locks[monthKey]?.[emp.id]?.[day];
+            const existing = state.assignments[monthKey][emp.id]?.[day];
+            if (locked || existing) return null;
+            const targetHours = monthlyTargetHours(emp, currentMonth);
+            const projectedHours = hoursForEmployee(monthKey, emp.id) + serviceDuration(service);
+            const nextNights = countNights(monthKey, emp.id) + (isNightService(service) ? 1 : 0);
+            if (rules.maxNights && nextNights > rules.maxNights) return null;
+            const counts = getCounts(emp.id, service.id);
+            const recentHours = rollingHours(emp.id, Math.max(1, day - 1), 5);
+            const projectedRecent = recentHours + serviceDuration(service);
+            const expectedRecent = targetHours ? (targetHours / days) * Math.min(5, day) : 0;
+            const projectedCumulative = cumulativeServiceHours(emp.id, Math.max(1, day - 1)) + serviceDuration(service);
+            const expectedCumulative = targetHours ? (targetHours * day) / days : projectedCumulative;
+            const monthlyTargetDiff = targetHours
+              ? Math.abs(projectedHours - targetHours) / Math.max(targetHours, 1)
+              : projectedHours * 0.01;
+            const blockPenalty = blockPatternPenalty(emp, day, service);
+            const shortTermBalance =
+              Math.abs(projectedRecent - expectedRecent) + segmentSpreadPenalty(emp.id, day, service) * 0.25 + blockPenalty;
+            const currentNights = countNights(monthKey, emp.id);
+            const projectedNights = currentNights + (isNightService(service) ? 1 : 0);
+            const idealNights = totalNightRequirements / eligibleNightCount;
+            const expectedNightsByDay = (idealNights * day) / days;
+            const nightBalance = Math.abs(projectedNights - expectedNightsByDay);
+            const weekendCount = getWeekendSet(emp.id).size + (isWeekend(currentDate) ? 1 : 0);
+            const expectedWeekends = allowedWorkedWeekends * (day / days);
+            const weekendBalance = Math.abs(weekendCount - expectedWeekends);
+            const holidayCount = countHolidayAssignments(emp.id);
+            const projectedHolidays = holidayCount + (isHolidayOrSunday(currentDate) ? 1 : 0);
+            const idealHolidays = totalHolidayRequirements / Math.max(1, eligibleHolidayCount);
+            const expectedHolidaysByDay = idealHolidays ? (idealHolidays * day) / days : 0;
+            const holidayBalance = idealHolidays ? Math.abs(projectedHolidays - expectedHolidaysByDay) : 0;
+            const eligibleCount = getEligibleCount(service) || 1;
+            const qualificationScarcity = counts.service / Math.max(1, eligibleCount);
+            const randomNoise = Math.random() * 0.2;
+            const currentHours = hoursForEmployee(monthKey, emp.id);
 
-          const prioritiseEarlyDeficit =
-            targetHours && day < 10 && currentHours / targetHours < 0.65 ? -2 : 0;
+            const prioritiseEarlyDeficit =
+              targetHours && day < 10 && currentHours / targetHours < 0.65 ? -2 : 0;
 
-          const continuity = continuityPenalty(emp.id, day, service);
+            const continuity = continuityPenalty(emp.id, day, service);
 
-          const weekendPairGuard = (() => {
-            const dow = currentDate.getDay();
-            if (dow === 0) {
-              const saturdayHolder = state.employees.find((candidate) => {
-                const assignment = state.assignments[monthKey][candidate.id]?.[day - 1];
-                return assignment === service.id;
-              });
-              if (saturdayHolder && saturdayHolder.id !== emp.id) return 40;
-              const saturdayAvailable = isAvailableForDate(emp, new Date(currentDate.getFullYear(), currentDate.getMonth(), day - 1), service);
-              if (!saturdayHolder && !saturdayAvailable) return 10;
-            }
-            if (dow === 6) {
-              const nextDate = new Date(currentDate.getFullYear(), currentMonth.getMonth(), day + 1);
-              const sundayServices = getRequiredServicesForDate(nextDate);
-              const needsPair = sundayServices.some((s) => s.id === service.id);
-              if (needsPair && !isAvailableForDate(emp, nextDate, service)) return 15;
-            }
-            return 0;
-          })();
+            const weekendPairGuard = (() => {
+              if (options.allowWeekendSolo) return 0;
+              const dow = currentDate.getDay();
+              if (dow === 0) {
+                const saturdayHolder = state.employees.find((candidate) => {
+                  const assignment = state.assignments[monthKey][candidate.id]?.[day - 1];
+                  return assignment === service.id;
+                });
+                if (saturdayHolder && saturdayHolder.id !== emp.id) return 40;
+                const saturdayAvailable = isAvailableForDate(
+                  emp,
+                  new Date(currentDate.getFullYear(), currentDate.getMonth(), day - 1),
+                  service
+                );
+                if (!saturdayHolder && !saturdayAvailable) return 10;
+              }
+              if (dow === 6) {
+                const nextDate = new Date(currentDate.getFullYear(), currentMonth.getMonth(), day + 1);
+                const sundayServices = getRequiredServicesForDate(nextDate);
+                const needsPair = sundayServices.some((s) => s.id === service.id);
+                if (needsPair && !isAvailableForDate(emp, nextDate, service)) return 15;
+              }
+              return 0;
+            })();
 
-          const distributionPenalty =
-            Math.abs(projectedCumulative - expectedCumulative) * 0.5 + segmentSpreadPenalty(emp.id, day, service);
-          const holidayPriority = isHolidayOrSunday(currentDate) ? holidayBalance : 0;
+            const distributionPenalty =
+              Math.abs(projectedCumulative - expectedCumulative) * 0.5 + segmentSpreadPenalty(emp.id, day, service);
+            const holidayPriority = isHolidayOrSunday(currentDate) ? holidayBalance : 0;
 
-          const score =
-            monthlyTargetDiff * 3.5 +
-            shortTermBalance * 6 +
-            nightBalance * 8 +
-            weekendBalance * 4.5 +
-            holidayBalance * 6 +
-            qualificationScarcity * 7.5 +
-            distributionPenalty +
-            weekendPairGuard +
-            holidayPriority +
-            continuity +
-            randomNoise * 0.5 +
-            prioritiseEarlyDeficit;
-          return { emp, score, counts, projectedHours };
-        })
-        .filter(Boolean)
-        .sort((a, b) => {
-          if (a.score !== b.score) return a.score - b.score;
-          if (a.counts.service !== b.counts.service) return a.counts.service - b.counts.service;
-          return a.counts.total - b.counts.total;
-        });
+            const score =
+              monthlyTargetDiff * 3.5 +
+              shortTermBalance * 6 +
+              nightBalance * 8 +
+              weekendBalance * 4.5 +
+              holidayBalance * 6 +
+              qualificationScarcity * 7.5 +
+              distributionPenalty +
+              weekendPairGuard +
+              holidayPriority +
+              continuity +
+              randomNoise * 0.5 +
+              prioritiseEarlyDeficit;
+            return { emp, score, counts, projectedHours };
+          })
+          .filter(Boolean)
+          .sort((a, b) => {
+            if (a.score !== b.score) return a.score - b.score;
+            if (a.counts.service !== b.counts.service) return a.counts.service - b.counts.service;
+            return a.counts.total - b.counts.total;
+          });
+
+      let candidates = buildCandidates();
+      if (!candidates.length) {
+        candidates = buildCandidates({ allowSplitPattern: true, allowWeekendSolo: true });
+      }
+      if (!candidates.length) {
+        candidates = buildCandidates({ allowSplitPattern: true, allowWeekendSolo: true, allowWeekendOverflow: true });
+      }
 
       const choice = candidates[0];
       if (choice) {
