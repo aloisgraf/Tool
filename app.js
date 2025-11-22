@@ -1013,6 +1013,20 @@ function isHoliday(date) {
   return SALZBURG_HOLIDAYS[key];
 }
 
+// NEU: Prüft, ob this date der Tag NACH einem Nachtdienst für diesen Mitarbeiter ist
+function isDayAfterNight(emp, date) {
+  const monthKey = getMonthKey(date);
+  const day = date.getDate();
+  if (day <= 1) return false;
+
+  const assignments = state.assignments[monthKey]?.[emp.id] || {};
+  const prevId = assignments[day - 1];
+  if (!prevId) return false;
+
+  const prevService = state.services.find((s) => s.id === prevId);
+  return !!prevService && isNightService(prevService);
+}
+
 function isDateWithinRange(date, startStr, endStr) {
   const start = parseISODate(startStr);
   const end = parseISODate(endStr);
@@ -3679,11 +3693,13 @@ function countStreakForMonth(empId, day, predicate, monthKey) {
 function generateRoster() {
   const monthKey = getMonthKey(currentMonth);
   ensureMonthMaps(monthKey);
+  const days = daysInMonth(currentMonth);
   // === C10 Reservierung vorab ===
   const c10Counts = new Map();
   const c10 = state.services.find((s) => s.name.trim().toUpperCase() === 'C10');
+
   if (c10) {
-    for (let day = 1; day <= daysInMonth(currentMonth); day++) {
+    for (let day = 1; day <= days; day++) {
       const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
       if (!getRequiredServicesForDate(date).some((s) => s.id === c10.id)) continue;
 
@@ -3691,17 +3707,19 @@ function generateRoster() {
       const emp = getOrderedEmployees().find((e) => {
         if (!isEmployeeActiveOnDate(e, date)) return false;
         if (!employeeAllowedForService(e, c10)) return false;
+        if (isDayAfterNight(e, date)) return false; // WICHTIG: kein C10 am Tag nach Nacht!
         return (c10Counts.get(e.id) || 0) < 1;
       });
 
       if (emp) {
-        if (!state.assignments[monthKey][emp.id]) state.assignments[monthKey][emp.id] = {};
+        if (!state.assignments[monthKey][emp.id]) {
+          state.assignments[monthKey][emp.id] = {};
+        }
         state.assignments[monthKey][emp.id][day] = c10.id;
         c10Counts.set(emp.id, 1);
       }
     }
   }
-  const days = daysInMonth(currentMonth);
   const rules = state.rules;
   const totalWeekends = totalWeekendsInMonth(currentMonth);
   const minFreeWeekends = Number(rules.minFreeWeekends) || 0;
@@ -4005,95 +4023,99 @@ function generateRoster() {
   const canAssign = (emp, day, service, opts = {}) => {
     const { allowSplitPattern = false, allowWeekendSolo = false, skipLookahead = false } = opts;
     const currentDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
-    if (!isAvailableForDate(emp, currentDate, service)) return false;
+
+    if (!isEmployeeActiveOnDate(emp, currentDate)) return false;
+    if (findVacationOnDate(emp, currentDate) || findSickOnDate(emp, currentDate)) return false;
+    if (!employeeAllowedForService(emp, service)) return false;
+    if (isNightService(service) && !emp.nightAllowed) return false;
+
+    // HARTE REGEL: am Tag nach einem Nachtdienst GAR KEIN Dienst
+    if (isDayAfterNight(emp, currentDate)) return false;
+
     const dayAssignments = state.assignments[monthKey][emp.id] || {};
     const locked = state.locks[monthKey]?.[emp.id]?.[day];
     const existing = dayAssignments[day];
     if (locked || existing) return false;
+
     const previousServiceId = dayAssignments[day - 1];
     const previousService = previousServiceId ? state.services.find((s) => s.id === previousServiceId) : null;
     const nextServiceId = dayAssignments[day + 1];
     const nextService = nextServiceId ? state.services.find((s) => s.id === nextServiceId) : null;
+
     const isNight = isNightService(service);
     const hadNightYesterday = previousService && isNightService(previousService);
     const hadDayYesterday = previousService && !isNightService(previousService);
+
+    // C10 maximal 1x pro Mitarbeiter
     if (isC10Service(service) && (c10Counts.get(emp.id) || 0) >= 1) return false;
+
+    // Keine direkten D<->N-Wechsel
     if ((isNight && hadDayYesterday) || (!isNight && hadNightYesterday)) return false;
+
+    // Kein N-D-Mix mit dem nächsten Tag
     if (nextService && isNightService(nextService) !== isNightService(service)) return false;
-    if (isNight) {
-      const gap = gapSinceLastNight(emp.id, day);
-      if (gap === 1) return false;
-    }
+
+    // Restzeit nach Nächten
+    if (!respectsRestAfterNights(emp, day)) return false;
+
+    // Mindest-Ruhe 11h
+    if (!hasMinimumRestHours(emp, day, service)) return false;
+
+    // Streaks (max. gleiche Dienste / Blöcke)
     const sameServiceStreak = countConsecutiveAssignments(emp.id, day, (svc, sid) => sid === service.id);
     if (sameServiceStreak >= 4) return false;
+
     const anyStreak = countConsecutiveAssignments(emp.id, day, () => true);
     if (anyStreak >= 5) return false;
+
     const dayStreak = countConsecutiveAssignments(emp.id, day, (svc) => !isNightService(svc));
     const nightStreak = countConsecutiveAssignments(emp.id, day, (svc) => isNightService(svc));
+
     if (!isNight && dayStreak >= 4) return false;
     if (isNight && nightStreak >= 2) return false;
     if (isNight && !emp.doubleNights && nightStreak >= 1) return false;
-    if (!respectsRestAfterNights(emp, day)) return false;
-    if (!hasMinimumRestHours(emp, day, service)) return false;
+
+    // Muster- und Block-Logik (nur weich anpassbar über Optionen)
     if (!allowSplitPattern && day > 2 && day < days - 1) {
-      // BLOCKBILDUNG – Verhindert Tag-Frei-Tag, Einzel-Dienste und falsche Splits
-      const prev = state.assignments[monthKey][emp.id]?.[day - 1];
-      const next = state.assignments[monthKey][emp.id]?.[day + 1];
-      const prevService = prev ? state.services.find((s) => s.id === prev) : null;
-      const nextService = next ? state.services.find((s) => s.id === next) : null;
-      const prev2 = state.assignments[monthKey][emp.id]?.[day - 2];
-      const next2 = state.assignments[monthKey][emp.id]?.[day + 2];
-
-      // Kein einzelner Dienst zwischen freien Tagen
-      if (!prev && !next && (prev2 || next2)) return false;
-
-      // Nicht Tag-Frei-Nacht oder Nacht-Frei-Tag
-      if (!prev && nextService && isNightService(nextService) !== isNightService(service)) return false;
-      if (prevService && !next && isNightService(prevService) !== isNightService(service)) return false;
-
-      // Nach Blöcken mindestens 2 Tage frei (außer Notfall)
-      const blockLen = countStreakForMonth(emp.id, day, () => true, monthKey);
-      if (blockLen >= 2) {
-        const { gap } = lastAssignmentInfo(emp.id, day, monthKey);
-        if (gap < 2) return false;
-      }
+      if (wouldCreateSplitDayPattern(emp, day)) return false;
     }
-    // WOCHENEND-PAARZUTEILUNG (Sa + So gleiche Funktion/Aufsicht)
+
+    // Wochenendlogik (Samstag/Sonntag-Paarung bleibt hier, wie gehabt)
     const dow = currentDate.getDay();
-
-    // SAMSTAG: Sonntag MUSS möglich sein
-    if (dow === 6) {
+    if (dow === 0) {
+      const saturdayServiceId = dayAssignments[day - 1];
+      if (saturdayServiceId && saturdayServiceId !== service.id) return false;
+    }
+    if (dow === 6 && !allowWeekendSolo) {
       const sunday = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day + 1);
-      if (getRequiredServicesForDate(sunday).some((s) => s.id === service.id)) {
-        if (!isAvailableForDate(emp, sunday, service)) return false;
+      const sundayServices = getRequiredServicesForDate(sunday);
+      if (sundayServices.some((s) => s.id === service.id) && !isEmployeeActiveOnDate(emp, sunday)) {
+        return false;
       }
     }
 
-    // SONNTAG: Wenn Samstag existiert → gleicher Mitarbeiter bevorzugt
-    if (dow === 0) {
-      const saturday = state.assignments[monthKey][emp.id]?.[day - 1];
-      if (saturday && saturday !== service.id) return false;
-    }
-
-    // LOOK-AHEAD – verhindert unlösbare Folgetage
+    // Lookahead: keine unlösbaren Folgetage erzeugen
     if (!skipLookahead) {
       for (let nd = day + 1; nd <= Math.min(days, day + 2); nd++) {
         const dt = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), nd);
         const req = getRequiredServicesForDate(dt);
         if (!req.length) continue;
 
-        // Nur prüfen, wenn freie Plätze existieren
         const stillNeeded = req.filter(() => {
           const count = Object.values(state.assignments[monthKey]).filter((a) => a?.[nd]).length;
           return count < req.length;
         });
         if (!stillNeeded.length) continue;
 
-        // Muss mindestens eine alternative Person geben
-        const possible = rotated.some((e) => e.id !== emp.id && canAssign(e, nd, req[0], { skipLookahead: true }));
+        const possible = getOrderedEmployees().some((e) => {
+          if (e.id === emp.id) return false;
+          return canAssign(e, nd, req[0], { skipLookahead: true });
+        });
+
         if (!possible) return false;
       }
     }
+
     return true;
   };
 
@@ -4332,10 +4354,13 @@ function generateRoster() {
     });
   };
 
-  // 1. klassische Rebalancierung
+  // 1. klassische Rebalancierung (werktags, verschieben von Über- zu Unterplanten)
   rebalanceRoster();
 
-  // 2. KI-ähnliche Feinanpassung per lokaler Suche
+  // 2. verbliebene Dienste füllen (unter Berücksichtigung von Stunden & Nachtregel)
+  fillRemainingServices(currentMonth);
+
+  // 3. KI-Feinschliff (lokale Optimierung, Stunden weiter ausgleichen)
   optimizeRosterLocally({
     monthKey,
     days,
@@ -4346,8 +4371,6 @@ function generateRoster() {
     totalHolidayRequirements,
   });
 
-  fillRemainingServices(currentMonth);
-
   const label = currentMonth.toLocaleDateString('de-AT', { month: 'long', year: 'numeric' });
   state.layout.generatorPivot = rotated.length ? (pivot + 1) % rotated.length : 0;
   appendLog('roster', `Dienstplan für ${label} generiert.`);
@@ -4355,7 +4378,15 @@ function generateRoster() {
   renderRoster();
 }
 
-function evaluateGlobalCost(monthKey, days, employees, rules, allowedWorkedWeekends, totalNightRequirements, totalHolidayRequirements) {
+function evaluateGlobalCost(
+  monthKey,
+  days,
+  employees,
+  rules,
+  allowedWorkedWeekends,
+  totalNightRequirements,
+  totalHolidayRequirements
+) {
   let cost = 0;
 
   for (const emp of employees) {
@@ -4363,21 +4394,22 @@ function evaluateGlobalCost(monthKey, days, employees, rules, allowedWorkedWeeke
     const target = monthlyTargetHours(emp, currentMonth) || 0;
     const actual = hoursForEmployee(monthKey, empId);
 
-    // Stundenbilanz – stark gewichtet
+    // STUNDENBILANZ – sehr stark gewichtet
     if (target > 0) {
       const relDiff = (actual - target) / target;
-      cost += relDiff * relDiff * 2000;
+      cost += relDiff * relDiff * 4000; // vorher z.B. 2000 → jetzt stärker
     } else {
       cost += actual * actual * 0.5;
     }
 
-    // Nächte – gegen eine ideale Verteilung
+    // Nächte – möglichst fair verteilt
     const nights = countNights(monthKey, empId);
-    const idealNights = totalNightRequirements / Math.max(1, employees.filter((e) => e.nightAllowed).length || 1);
+    const nightPool = employees.filter((e) => e.nightAllowed).length || 1;
+    const idealNights = totalNightRequirements / nightPool;
     const nightDiff = nights - idealNights;
-    cost += nightDiff * nightDiff * 400;
+    cost += nightDiff * nightDiff * 300;
 
-    // Wochenenden – möglichst nahe an allowedWorkedWeekends
+    // Wochenenden – nahe an allowedWorkedWeekends
     const assignments = state.assignments[monthKey]?.[empId] || {};
     const weekendKeys = new Set();
     for (let d = 1; d <= days; d++) {
@@ -4391,7 +4423,7 @@ function evaluateGlobalCost(monthKey, days, employees, rules, allowedWorkedWeeke
     }
     const weekendCount = weekendKeys.size;
     const weekendDiff = weekendCount - allowedWorkedWeekends;
-    cost += weekendDiff * weekendDiff * 250;
+    cost += weekendDiff * weekendDiff * 200;
 
     // Sonn-/Feiertage – faire Verteilung
     let holidayCount = 0;
@@ -4405,32 +4437,27 @@ function evaluateGlobalCost(monthKey, days, employees, rules, allowedWorkedWeeke
     }
     const idealHoliday = totalHolidayRequirements / Math.max(1, employees.length);
     const holidayDiff = holidayCount - idealHoliday;
-    cost += holidayDiff * holidayDiff * 150;
+    cost += holidayDiff * holidayDiff * 120;
 
-    // Blockstruktur: Tag–Frei–Tag hart bestrafen
+    // Tag–Frei–Tag / Einzelinseln hart bestrafen
     for (let d = 2; d < days; d++) {
       const prev = assignments[d - 1];
       const cur = assignments[d];
       const next = assignments[d + 1];
-      if (prev && !cur && next) {
-        cost += 80;
-      }
+      if (prev && !cur && next) cost += 80;
     }
-
-    // Einzelne isolierte Tage (ohne Anschluss) ebenfalls bestrafen
     for (let d = 1; d <= days; d++) {
       const cur = assignments[d];
       if (!cur) continue;
       const prev = assignments[d - 1];
       const next = assignments[d + 1];
-      if (!prev && !next) {
-        cost += 30;
-      }
+      if (!prev && !next) cost += 30;
     }
   }
 
   return cost;
 }
+
 
 function optimizeRosterLocally(config) {
   const {
@@ -4443,7 +4470,6 @@ function optimizeRosterLocally(config) {
     totalHolidayRequirements,
   } = config;
 
-  // Startwert
   let bestCost = evaluateGlobalCost(
     monthKey,
     days,
@@ -4454,65 +4480,74 @@ function optimizeRosterLocally(config) {
     totalHolidayRequirements
   );
 
-  const iterations = 2000;
+  const maxIterations = 1500;
 
-  for (let i = 0; i < iterations; i++) {
-    const donor = employees[Math.floor(Math.random() * employees.length)];
-    const receiver = employees[Math.floor(Math.random() * employees.length)];
-    if (!donor || !receiver || donor.id === receiver.id) continue;
+  for (let iter = 0; iter < maxIterations; iter++) {
+    // Stundenbilanz ermitteln
+    const hourInfo = employees.map((emp) => {
+      const target = monthlyTargetHours(emp, currentMonth) || 0;
+      const current = hoursForEmployee(monthKey, emp.id);
+      const diff = target ? current - target : 0; // >0 = Überstunden
+      return { emp, target, current, diff };
+    });
 
-    const day = 1 + Math.floor(Math.random() * days);
+    const donors = hourInfo
+      .filter((h) => h.diff > 2) // deutlich über Ziel
+      .sort((a, b) => b.diff - a.diff); // stärkste Überstunden zuerst
+    const receivers = hourInfo
+      .filter((h) => h.diff < -2) // deutlich unter Ziel
+      .sort((a, b) => a.diff - b.diff); // stärkste Unterdeckung zuerst
+
+    if (!donors.length || !receivers.length) break;
+
+    const donor = donors[Math.min(Math.floor(Math.random() * 3), donors.length - 1)].emp;
+    const receiver = receivers[Math.min(Math.floor(Math.random() * 3), receivers.length - 1)].emp;
 
     const donorAssignments = state.assignments[monthKey][donor.id] || {};
     const receiverAssignments = state.assignments[monthKey][receiver.id] || {};
 
-    const serviceId = donorAssignments[day];
-    if (!serviceId) continue; // donor hat an dem Tag nichts
-    if (receiverAssignments[day]) continue; // receiver schon belegt
+    const candidateDays = [];
+    for (let day = 1; day <= days; day++) {
+      const sid = donorAssignments[day];
+      if (!sid) continue;
+      if (receiverAssignments[day]) continue;
 
-    if (state.locks[monthKey]?.[donor.id]?.[day]) continue;
-    if (state.locks[monthKey]?.[receiver.id]?.[day]) continue;
+      const service = state.services.find((s) => s.id === sid);
+      if (!service) continue;
 
+      // Nachtdienste lassen wir hier bewusst in Ruhe
+      if (isNightService(service)) continue;
+
+      const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
+
+      if (state.locks[monthKey]?.[donor.id]?.[day]) continue;
+      if (state.locks[monthKey]?.[receiver.id]?.[day]) continue;
+      if (!isEmployeeActiveOnDate(receiver, date)) continue;
+      if (findVacationOnDate(receiver, date) || findSickOnDate(receiver, date)) continue;
+      if (!employeeAllowedForService(receiver, service)) continue;
+      if (isDayAfterNight(receiver, date)) continue; // NIE Dienst am Tag nach Nacht
+
+      candidateDays.push({ day, serviceId: sid });
+    }
+
+    if (!candidateDays.length) continue;
+    const { day, serviceId } = candidateDays[Math.floor(Math.random() * candidateDays.length)];
     const service = state.services.find((s) => s.id === serviceId);
-    if (!service) continue;
-
     const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
 
-    // Receiver muss grundsätzlich verfügbar sein
-    if (!isEmployeeActiveOnDate(receiver, date)) continue;
-    if (findVacationOnDate(receiver, date) || findSickOnDate(receiver, date)) continue;
-
-    const movedDays = [];
-    const moveDay = (d) => {
-      if (d < 1 || d > days) return;
-      if (receiverAssignments[d]) return;
-      const sid = donorAssignments[d];
-      if (!sid) return;
-      movedDays.push({ day: d, serviceId: sid });
-      delete donorAssignments[d];
-      receiverAssignments[d] = sid;
-    };
-
     // Probeweise verschieben
-    moveDay(day);
-    if (Math.random() < 0.1) {
-      for (let offset = -1; offset <= 1; offset++) {
-        if (offset === 0) continue;
-        moveDay(day + offset);
-      }
-    }
+    delete donorAssignments[day];
+    receiverAssignments[day] = serviceId;
     state.assignments[monthKey][donor.id] = donorAssignments;
     state.assignments[monthKey][receiver.id] = receiverAssignments;
 
-    // Harte Grenzen prüfen (Überstunden, max Nächte, max Wochenenden)
-    const targetHoursReceiver = monthlyTargetHours(receiver, currentMonth) || 0;
+    // Grobe harte Grenzen: Überstunden nicht explodieren lassen
+    const targetReceiver = monthlyTargetHours(receiver, currentMonth) || 0;
     const hoursReceiver = hoursForEmployee(monthKey, receiver.id);
-    if (targetHoursReceiver && hoursReceiver > targetHoursReceiver + 8) {
-      // revert
-      movedDays.forEach(({ day: d, serviceId: sid }) => {
-        delete receiverAssignments[d];
-        donorAssignments[d] = sid;
-      });
+    if (targetReceiver && hoursReceiver > targetReceiver + 12) {
+      // Rückgängig machen
+      delete receiverAssignments[day];
+      donorAssignments[day] = serviceId;
       state.assignments[monthKey][donor.id] = donorAssignments;
       state.assignments[monthKey][receiver.id] = receiverAssignments;
       continue;
@@ -4521,46 +4556,14 @@ function optimizeRosterLocally(config) {
     if (rules.maxNights) {
       const nightsReceiver = countNights(monthKey, receiver.id);
       if (nightsReceiver > rules.maxNights) {
-        // revert
-        movedDays.forEach(({ day: d, serviceId: sid }) => {
-          delete receiverAssignments[d];
-          donorAssignments[d] = sid;
-        });
+        delete receiverAssignments[day];
+        donorAssignments[day] = serviceId;
         state.assignments[monthKey][donor.id] = donorAssignments;
         state.assignments[monthKey][receiver.id] = receiverAssignments;
         continue;
       }
     }
 
-    if (isWeekend(date)) {
-      const countWorkedWeekends = (emp) => {
-        const ass = state.assignments[monthKey][emp.id] || {};
-        const keys = new Set();
-        for (let d = 1; d <= days; d++) {
-          const sid = ass[d];
-          if (!sid) continue;
-          const dt = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), d);
-          if (dt.getDay() === 0 || dt.getDay() === 6) {
-            const wk = weekendKeyForDate(dt);
-            if (wk) keys.add(wk);
-          }
-        }
-        return keys.size;
-      };
-
-      if (countWorkedWeekends(receiver) > allowedWorkedWeekends) {
-        // revert
-        movedDays.forEach(({ day: d, serviceId: sid }) => {
-          delete receiverAssignments[d];
-          donorAssignments[d] = sid;
-        });
-        state.assignments[monthKey][donor.id] = donorAssignments;
-        state.assignments[monthKey][receiver.id] = receiverAssignments;
-        continue;
-      }
-    }
-
-    // Globale Güte nach dem Move neu bewerten
     const newCost = evaluateGlobalCost(
       monthKey,
       days,
@@ -4572,14 +4575,11 @@ function optimizeRosterLocally(config) {
     );
 
     if (newCost <= bestCost) {
-      // Verbesserung behalten
-      bestCost = newCost;
+      bestCost = newCost; // Verbesserung behalten
     } else {
-      // Schlechter → Rückgängig machen
-      movedDays.forEach(({ day: d, serviceId: sid }) => {
-        delete receiverAssignments[d];
-        donorAssignments[d] = sid;
-      });
+      // schlechter → zurückrollen
+      delete receiverAssignments[day];
+      donorAssignments[day] = serviceId;
       state.assignments[monthKey][donor.id] = donorAssignments;
       state.assignments[monthKey][receiver.id] = receiverAssignments;
     }
