@@ -3664,6 +3664,9 @@ function generateRoster() {
     return weekendSets.get(empId);
   };
 
+  const isHolidayOrSunday = (date) => isHoliday(date) || date.getDay() === 0;
+  const isC10Service = (service) => service?.name?.trim().toUpperCase() === 'C10';
+
   // Bestehende, nicht gesperrte Einträge für den Monat zurücksetzen
   state.employees.forEach((emp) => {
     if (!state.assignments[monthKey][emp.id]) state.assignments[monthKey][emp.id] = {};
@@ -3683,12 +3686,22 @@ function generateRoster() {
 
   const serviceCounts = new Map();
   const assignmentCounts = new Map();
+  const c10Counts = new Map();
+  const countHolidayAssignmentsCache = new Map();
   Object.entries(state.assignments[monthKey]).forEach(([empId, entries]) => {
-    Object.values(entries).forEach((serviceId) => {
+    Object.entries(entries).forEach(([day, serviceId]) => {
       const map = serviceCounts.get(empId) || {};
       map[serviceId] = (map[serviceId] || 0) + 1;
       serviceCounts.set(empId, map);
       assignmentCounts.set(empId, (assignmentCounts.get(empId) || 0) + 1);
+      const service = state.services.find((s) => s.id === serviceId);
+      if (isC10Service(service)) {
+        c10Counts.set(empId, (c10Counts.get(empId) || 0) + 1);
+      }
+      const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), Number(day));
+      if (isHolidayOrSunday(date)) {
+        countHolidayAssignmentsCache.set(empId, (countHolidayAssignmentsCache.get(empId) || 0) + 1);
+      }
     });
   });
 
@@ -3697,11 +3710,18 @@ function generateRoster() {
     return { service: serviceMap[serviceId] || 0, total: assignmentCounts.get(empId) || 0 };
   };
 
-  const incrementCounts = (empId, serviceId) => {
+  const incrementCounts = (empId, serviceId, date) => {
     const map = serviceCounts.get(empId) || {};
     map[serviceId] = (map[serviceId] || 0) + 1;
     serviceCounts.set(empId, map);
     assignmentCounts.set(empId, (assignmentCounts.get(empId) || 0) + 1);
+    const service = state.services.find((s) => s.id === serviceId);
+    if (isC10Service(service)) {
+      c10Counts.set(empId, (c10Counts.get(empId) || 0) + 1);
+    }
+    if (date && isHolidayOrSunday(date)) {
+      countHolidayAssignmentsCache.set(empId, (countHolidayAssignmentsCache.get(empId) || 0) + 1);
+    }
   };
 
   const countConsecutiveAssignments = (empId, day, predicate) =>
@@ -3723,7 +3743,33 @@ function generateRoster() {
     return cumulativeServiceHours(empId, endDay) - cumulativeServiceHours(empId, start - 1);
   };
 
+  const gapSinceLastNight = (empId, day) => {
+    const assignments = state.assignments[monthKey]?.[empId] || {};
+    for (let i = day - 1; i >= 1; i--) {
+      const sid = assignments[i];
+      if (!sid) continue;
+      const svc = state.services.find((s) => s.id === sid);
+      if (!svc) continue;
+      if (isNightService(svc)) return day - i - 1;
+      break;
+    }
+    return Infinity;
+  };
+
+  const countHolidayAssignments = (empId) => {
+    if (countHolidayAssignmentsCache.has(empId)) return countHolidayAssignmentsCache.get(empId);
+    const assignments = state.assignments[monthKey]?.[empId] || {};
+    let total = 0;
+    Object.keys(assignments).forEach((day) => {
+      const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), Number(day));
+      if (isHolidayOrSunday(date)) total += 1;
+    });
+    countHolidayAssignmentsCache.set(empId, total);
+    return total;
+  };
+
   let totalNightRequirements = 0;
+  let totalHolidayRequirements = 0;
   const eligibleCache = new Map();
   const getEligibleCount = (service) => {
     if (!service) return 0;
@@ -3743,7 +3789,11 @@ function generateRoster() {
     const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
     const services = getRequiredServicesForDate(date);
     totalNightRequirements += services.filter((svc) => isNightService(svc)).length;
+    if (isHolidayOrSunday(date)) {
+      totalHolidayRequirements += services.length;
+    }
   }
+  const eligibleHolidayCount = rotated.length || 1;
 
   const eligibleNightCount = rotated.filter((emp) => emp.nightAllowed).length || 1;
 
@@ -3805,8 +3855,13 @@ function generateRoster() {
     const isNight = isNightService(service);
     const hadNightYesterday = previousService && isNightService(previousService);
     const hadDayYesterday = previousService && !isNightService(previousService);
+    if (isC10Service(service) && (c10Counts.get(emp.id) || 0) >= 1) return false;
     if ((isNight && hadDayYesterday) || (!isNight && hadNightYesterday)) return false;
     if (nextService && isNightService(nextService) !== isNightService(service)) return false;
+    if (isNight) {
+      const gap = gapSinceLastNight(emp.id, day);
+      if (gap === 1) return false;
+    }
     const sameServiceStreak = countConsecutiveAssignments(emp.id, day, (svc, sid) => sid === service.id);
     if (sameServiceStreak >= 4) return false;
     const anyStreak = countConsecutiveAssignments(emp.id, day, () => true);
@@ -3862,9 +3917,14 @@ function generateRoster() {
           const nightBalance = Math.abs(projectedNights - expectedNightsByDay);
           const weekendCount = getWeekendSet(emp.id).size + (isWeekend(currentDate) ? 1 : 0);
           const expectedWeekends = allowedWorkedWeekends * (day / days);
-          const weekendBalance = Math.max(0, weekendCount - expectedWeekends);
+          const weekendBalance = Math.abs(weekendCount - expectedWeekends);
+          const holidayCount = countHolidayAssignments(emp.id);
+          const projectedHolidays = holidayCount + (isHolidayOrSunday(currentDate) ? 1 : 0);
+          const idealHolidays = totalHolidayRequirements / Math.max(1, eligibleHolidayCount);
+          const expectedHolidaysByDay = idealHolidays ? (idealHolidays * day) / days : 0;
+          const holidayBalance = idealHolidays ? Math.abs(projectedHolidays - expectedHolidaysByDay) : 0;
           const eligibleCount = getEligibleCount(service) || 1;
-          const qualificationScarcity = ((counts.service + 1) / eligibleCount) * 1.5;
+          const qualificationScarcity = counts.service / Math.max(1, eligibleCount);
           const randomNoise = Math.random() * 0.2;
           const currentHours = hoursForEmployee(monthKey, emp.id);
 
@@ -3890,15 +3950,18 @@ function generateRoster() {
           })();
 
           const distributionPenalty = Math.abs(projectedCumulative - expectedCumulative) * 0.5;
+          const holidayPriority = isHolidayOrSunday(currentDate) ? holidayBalance : 0;
 
           const score =
             monthlyTargetDiff * 3.5 +
             shortTermBalance * 6 +
             nightBalance * 8 +
             weekendBalance * 4.5 +
+            holidayBalance * 6 +
             qualificationScarcity * 7.5 +
             distributionPenalty +
             weekendPairGuard +
+            holidayPriority +
             randomNoise * 0.5 +
             prioritiseEarlyDeficit;
           return { emp, score, counts, projectedHours };
@@ -3915,7 +3978,7 @@ function generateRoster() {
         const { emp } = choice;
         if (!state.assignments[monthKey][emp.id]) state.assignments[monthKey][emp.id] = {};
         state.assignments[monthKey][emp.id][day] = service.id;
-        incrementCounts(emp.id, service.id);
+        incrementCounts(emp.id, service.id, currentDate);
         if (isWeekend(currentDate)) {
           const weekendKey = weekendKeyForDate(currentDate);
           if (weekendKey) {
