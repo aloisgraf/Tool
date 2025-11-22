@@ -4035,7 +4035,7 @@ function generateRoster() {
     const dow = currentDate.getDay();
 
     // SAMSTAG: Sonntag MUSS möglich sein
-    if (!allowWeekendSolo && dow === 6) {
+    if (dow === 6) {
       const sunday = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day + 1);
       if (getRequiredServicesForDate(sunday).some((s) => s.id === service.id)) {
         if (!isAvailableForDate(emp, sunday, service)) return false;
@@ -4252,12 +4252,233 @@ function generateRoster() {
       }
     });
   };
+
+  // 1. klassische Rebalancierung
   rebalanceRoster();
+
+  // 2. KI-ähnliche Feinanpassung per lokaler Suche
+  optimizeRosterLocally({
+    monthKey,
+    days,
+    employees: rotated,
+    rules,
+    allowedWorkedWeekends,
+    totalNightRequirements,
+    totalHolidayRequirements,
+  });
+
   const label = currentMonth.toLocaleDateString('de-AT', { month: 'long', year: 'numeric' });
   state.layout.generatorPivot = rotated.length ? (pivot + 1) % rotated.length : 0;
   appendLog('roster', `Dienstplan für ${label} generiert.`);
   saveState();
   renderRoster();
+}
+
+function evaluateGlobalCost(monthKey, days, employees, rules, allowedWorkedWeekends, totalNightRequirements, totalHolidayRequirements) {
+  let cost = 0;
+
+  for (const emp of employees) {
+    const empId = emp.id;
+    const target = monthlyTargetHours(emp, currentMonth) || 0;
+    const actual = hoursForEmployee(monthKey, empId);
+
+    // Stundenbilanz – stark gewichtet
+    if (target > 0) {
+      const relDiff = (actual - target) / target;
+      cost += relDiff * relDiff * 2000;
+    } else {
+      cost += actual * actual * 0.5;
+    }
+
+    // Nächte – gegen eine ideale Verteilung
+    const nights = countNights(monthKey, empId);
+    const idealNights = totalNightRequirements / Math.max(1, employees.filter((e) => e.nightAllowed).length || 1);
+    const nightDiff = nights - idealNights;
+    cost += nightDiff * nightDiff * 400;
+
+    // Wochenenden – möglichst nahe an allowedWorkedWeekends
+    const assignments = state.assignments[monthKey]?.[empId] || {};
+    const weekendKeys = new Set();
+    for (let d = 1; d <= days; d++) {
+      const sid = assignments[d];
+      if (!sid) continue;
+      const dt = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), d);
+      if (dt.getDay() === 0 || dt.getDay() === 6) {
+        const wk = weekendKeyForDate(dt);
+        if (wk) weekendKeys.add(wk);
+      }
+    }
+    const weekendCount = weekendKeys.size;
+    const weekendDiff = weekendCount - allowedWorkedWeekends;
+    cost += weekendDiff * weekendDiff * 250;
+
+    // Sonn-/Feiertage – faire Verteilung
+    let holidayCount = 0;
+    for (let d = 1; d <= days; d++) {
+      const sid = assignments[d];
+      if (!sid) continue;
+      const dt = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), d);
+      if (isHoliday(dt) || dt.getDay() === 0) {
+        holidayCount++;
+      }
+    }
+    const idealHoliday = totalHolidayRequirements / Math.max(1, employees.length);
+    const holidayDiff = holidayCount - idealHoliday;
+    cost += holidayDiff * holidayDiff * 150;
+
+    // Blockstruktur: Tag–Frei–Tag hart bestrafen
+    for (let d = 2; d < days; d++) {
+      const prev = assignments[d - 1];
+      const cur = assignments[d];
+      const next = assignments[d + 1];
+      if (prev && !cur && next) {
+        cost += 80;
+      }
+    }
+
+    // Einzelne isolierte Tage (ohne Anschluss) ebenfalls bestrafen
+    for (let d = 1; d <= days; d++) {
+      const cur = assignments[d];
+      if (!cur) continue;
+      const prev = assignments[d - 1];
+      const next = assignments[d + 1];
+      if (!prev && !next) {
+        cost += 30;
+      }
+    }
+  }
+
+  return cost;
+}
+
+function optimizeRosterLocally(config) {
+  const {
+    monthKey,
+    days,
+    employees,
+    rules,
+    allowedWorkedWeekends,
+    totalNightRequirements,
+    totalHolidayRequirements,
+  } = config;
+
+  // Startwert
+  let bestCost = evaluateGlobalCost(
+    monthKey,
+    days,
+    employees,
+    rules,
+    allowedWorkedWeekends,
+    totalNightRequirements,
+    totalHolidayRequirements
+  );
+
+  const iterations = 800;
+
+  for (let i = 0; i < iterations; i++) {
+    const donor = employees[Math.floor(Math.random() * employees.length)];
+    const receiver = employees[Math.floor(Math.random() * employees.length)];
+    if (!donor || !receiver || donor.id === receiver.id) continue;
+
+    const day = 1 + Math.floor(Math.random() * days);
+
+    const donorAssignments = state.assignments[monthKey][donor.id] || {};
+    const receiverAssignments = state.assignments[monthKey][receiver.id] || {};
+
+    const serviceId = donorAssignments[day];
+    if (!serviceId) continue; // donor hat an dem Tag nichts
+    if (receiverAssignments[day]) continue; // receiver schon belegt
+
+    if (state.locks[monthKey]?.[donor.id]?.[day]) continue;
+    if (state.locks[monthKey]?.[receiver.id]?.[day]) continue;
+
+    const service = state.services.find((s) => s.id === serviceId);
+    if (!service) continue;
+
+    const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
+
+    // Receiver muss grundsätzlich verfügbar sein
+    if (!isEmployeeActiveOnDate(receiver, date)) continue;
+    if (findVacationOnDate(receiver, date) || findSickOnDate(receiver, date)) continue;
+
+    // Probeweise verschieben
+    delete donorAssignments[day];
+    state.assignments[monthKey][donor.id] = donorAssignments;
+    receiverAssignments[day] = serviceId;
+    state.assignments[monthKey][receiver.id] = receiverAssignments;
+
+    // Harte Grenzen prüfen (Überstunden, max Nächte, max Wochenenden)
+    const targetHoursReceiver = monthlyTargetHours(receiver, currentMonth) || 0;
+    const hoursReceiver = hoursForEmployee(monthKey, receiver.id);
+    if (targetHoursReceiver && hoursReceiver > targetHoursReceiver + 8) {
+      // revert
+      delete receiverAssignments[day];
+      donorAssignments[day] = serviceId;
+      state.assignments[monthKey][donor.id] = donorAssignments;
+      state.assignments[monthKey][receiver.id] = receiverAssignments;
+      continue;
+    }
+
+    if (rules.maxNights) {
+      const nightsReceiver = countNights(monthKey, receiver.id);
+      if (nightsReceiver > rules.maxNights) {
+        // revert
+        delete receiverAssignments[day];
+        donorAssignments[day] = serviceId;
+        state.assignments[monthKey][donor.id] = donorAssignments;
+        state.assignments[monthKey][receiver.id] = receiverAssignments;
+        continue;
+      }
+    }
+
+    if (isWeekend(date)) {
+      const countWorkedWeekends = (emp) => {
+        const ass = state.assignments[monthKey][emp.id] || {};
+        const keys = new Set();
+        for (let d = 1; d <= days; d++) {
+          const sid = ass[d];
+          if (!sid) continue;
+          const dt = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), d);
+          if (dt.getDay() === 0 || dt.getDay() === 6) {
+            const wk = weekendKeyForDate(dt);
+            if (wk) keys.add(wk);
+          }
+        }
+        return keys.size;
+      };
+
+      if (countWorkedWeekends(receiver) > allowedWorkedWeekends) {
+        // revert
+        delete receiverAssignments[day];
+        donorAssignments[day] = serviceId;
+        state.assignments[monthKey][donor.id] = donorAssignments;
+        state.assignments[monthKey][receiver.id] = receiverAssignments;
+        continue;
+      }
+    }
+
+    // Globale Güte nach dem Move neu bewerten
+    const newCost = evaluateGlobalCost(
+      monthKey,
+      days,
+      employees,
+      rules,
+      allowedWorkedWeekends,
+      totalNightRequirements,
+      totalHolidayRequirements
+    );
+
+    if (newCost <= bestCost) {
+      // Verbesserung behalten
+      bestCost = newCost;
+    } else {
+      // Schlechter → Rückgängig machen
+      delete receiverAssignments[day];
+      donorAssignments[day] = serviceId;
+      state.assignments[monthKey][donor.id] = donorAssignments;
+      state.assignments[monthKey][receiver.id] = receiverAssignments;
+    }
+  }
 }
 
 function clearRosterAssignments() {
