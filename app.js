@@ -408,6 +408,7 @@ function forceDefaultLogin() {
   if (ticketReporterEmailInput && currentUser.employeeEmail) ticketReporterEmailInput.value = currentUser.employeeEmail;
   applyPermissions();
   showScreen('roster');
+  if (appShell) appShell.hidden = false;
   return true;
 }
 
@@ -4306,6 +4307,61 @@ function generateRoster() {
     return true;
   };
 
+  const describeOpenService = (service, date, day) => {
+    let inactive = 0;
+    let absent = 0;
+    let unqualified = 0;
+    let nightBlocked = 0;
+    let ruleBlocked = 0;
+
+    for (const emp of rotated) {
+      if (!isEmployeeActiveOnDate(emp, date)) {
+        inactive++;
+        continue;
+      }
+      if (findVacationOnDate(emp, date) || findSickOnDate(emp, date)) {
+        absent++;
+        continue;
+      }
+      if (!employeeAllowedForService(emp, service)) {
+        unqualified++;
+        continue;
+      }
+      if (isNightService(service) && !emp.nightAllowed) {
+        nightBlocked++;
+        continue;
+      }
+      const feasible = canAssign(emp, day, service, {
+        allowSplitPattern: true,
+        allowWeekendSolo: true,
+        skipLookahead: true,
+      });
+      if (!feasible) ruleBlocked++;
+    }
+
+    const parts = [];
+    if (unqualified) parts.push(`${unqualified} ohne Qualifikation`);
+    if (nightBlocked) parts.push(`${nightBlocked} keine Nächte`);
+    if (absent) parts.push(`${absent} abwesend (Urlaub/Krank)`);
+    if (inactive) parts.push(`${inactive} nicht verfügbar`);
+    if (ruleBlocked) parts.push(`Regeln/Restzeiten blockieren (${ruleBlocked})`);
+    const reason = parts.length ? parts.join(', ') : 'keine passenden Mitarbeitenden verfügbar';
+    return `Dienst ${service.name} am ${date.toLocaleDateString('de-AT')} offen: ${reason}.`;
+  };
+
+  const recordOpenServices = () => {
+    const notes = [];
+    for (let day = 1; day <= days; day++) {
+      const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
+      const remaining = remainingServicesForDay(day, monthKey, date);
+      if (!remaining.length) continue;
+      for (const service of remaining) {
+        notes.push(describeOpenService(service, date, day));
+      }
+    }
+    return notes;
+  };
+
   const fillRemainingServices = (monthDate) => {
     const daysInTarget = daysInMonth(monthDate);
     const monthKeyFill = getMonthKey(monthDate);
@@ -4557,6 +4613,13 @@ function generateRoster() {
     totalNightRequirements,
     totalHolidayRequirements,
   });
+
+  // 4. Offene Dienste dokumentieren
+  const unplannedNotes = recordOpenServices();
+  unplannedNotes.forEach((note) => appendLog('roster', note));
+  if (unplannedNotes.length) {
+    showNotification('Einige Dienste blieben offen – Details im Log.', 'error');
+  }
 
   const label = currentMonth.toLocaleDateString('de-AT', { month: 'long', year: 'numeric' });
   state.layout.generatorPivot = rotated.length ? (pivot + 1) % rotated.length : 0;
@@ -5139,7 +5202,6 @@ function init() {
   updateDropdowns();
   if (loginStatus) loginStatus.textContent = 'Bitte einloggen.';
   if (employeeExitBtn) employeeExitBtn.disabled = true;
-  forceDefaultLogin();
   updateExitedEmployees();
   renderEmployees();
   renderServices();
@@ -5153,7 +5215,17 @@ function init() {
   renderTickets();
   renderMissionBoard();
   wireEvents();
+  forceDefaultLogin();
   applyPermissions();
+}
+
+function initSafely() {
+  try {
+    init();
+  } catch (err) {
+    console.error('Fehler beim Initialisieren', err);
+    showNotification('Fehler beim Starten der Anwendung', 'error');
+  }
 }
 
 if (typeof window !== 'undefined') {
@@ -5167,7 +5239,7 @@ if (typeof window !== 'undefined') {
 }
 
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
+  document.addEventListener('DOMContentLoaded', initSafely);
 } else {
-  init();
+  initSafely();
 }
