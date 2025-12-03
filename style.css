@@ -137,6 +137,7 @@ button {
   transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
 }
 button:hover { background: #1f2937; }
+.light-theme button:hover { background: #e2e8f0; color: #0f172a; }
 button:active { transform: translateY(1px); }
 button.primary { background: linear-gradient(120deg, #0ea5e9, #22d3ee); border-color: transparent; color: #0b1224; font-weight: 700; }
 button.ghost { background: transparent; }
@@ -482,6 +483,8 @@ textarea { resize: vertical; font: inherit; }
 .card-details { border-top: 1px solid var(--border); padding-top: .65rem; display: flex; flex-direction: column; gap: .5rem; }
 .card-details details,
 .list .item > details { border: 1px solid rgba(148, 163, 184, 0.3); border-radius: .75rem; padding: .5rem .75rem; background: rgba(10, 15, 27, 0.9); }
+.light-theme .card-details details,
+.light-theme .list .item > details { background: #f8fafc; border-color: #cbd5e1; }
 .card-details summary,
 .list .item > details > summary { list-style: none; cursor: pointer; font-weight: 600; display: flex; justify-content: space-between; gap: .35rem; align-items: center; }
 .card-details summary::-webkit-details-marker,
@@ -496,12 +499,16 @@ textarea { resize: vertical; font: inherit; }
 
 .table-wrapper { overflow: auto; border: 1px solid var(--border); border-radius: .75rem; }
 .table-wrapper.roster { padding: .5rem; background: #0b1224; }
+.light-theme .table-wrapper.roster { background: #e2e8f0; }
 
 #rosterTable { border-collapse: separate; border-spacing: 0; width: 100%; min-width: 1100px; color: var(--text); font-size: .9rem; }
 #rosterTable th, #rosterTable td { border: 1px solid #1f2937; padding: .4rem .35rem; text-align: center; }
 #rosterTable th { background: #0f172a; position: sticky; top: 0; z-index: 2; }
 #rosterTable th.names { position: sticky; z-index: 3; background: #0b1224; }
 #rosterTable td.names { position: sticky; background: #0b1224; text-align: left; z-index: 1; }
+.light-theme #rosterTable th { background: #f1f5f9; color: #0f172a; border-color: #cbd5e1; }
+.light-theme #rosterTable td { border-color: #cbd5e1; }
+.light-theme #rosterTable th.names, .light-theme #rosterTable td.names { background: #e2e8f0; color: #0f172a; }
 
 #rosterTable th.col-info, #rosterTable td.col-info { left: 0; min-width: var(--col-info); }
 #rosterTable th.col-hours, #rosterTable td.col-hours { left: var(--col-info); min-width: var(--col-hours); }
@@ -783,6 +790,8 @@ textarea { resize: vertical; font: inherit; }
 .ticket-section {
   display: block;
 }
+.ticket-section + .ticket-section { margin-top: 1.25rem; }
+.ticket-section__title { margin: 0 0 .5rem; color: var(--muted); font-weight: 700; }
 
 .ticket-section__grid {
   display: grid;

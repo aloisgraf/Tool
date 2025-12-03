@@ -1606,16 +1606,18 @@ function remainingServicesForDay(day, monthKey, date) {
 }
 
 function allowedServicesForEmployee(emp, assigned) {
-  const func = state.functions.find((f) => f.id === emp.functionId);
-  const allowedIds = Array.isArray(func?.serviceIds) && func.serviceIds.length ? func.serviceIds : [];
-  const services = allowedIds.length ? state.services.filter((s) => allowedIds.includes(s.id)) : [];
-  return services
-    .filter((service) => {
-      if (!service) return false;
-      if (isNightService(service) && !emp.nightAllowed) return false;
-      return true;
+  const services = state.services
+    .map((service) => {
+      const func = state.functions.find((f) => f.id === emp.functionId);
+      const allowedIds = Array.isArray(func?.serviceIds) ? new Set(func.serviceIds) : new Set();
+      const disabled = isNightService(service) && !emp.nightAllowed;
+      const mismatched = allowedIds.size ? !allowedIds.has(service.id) : false;
+      return { ...service, disabled: disabled || mismatched };
     })
     .sort((a, b) => a.name.localeCompare(b.name, 'de', { sensitivity: 'base', numeric: true }));
+
+  const WUNSCH_FREI = { id: 'WUNSCHFREI', name: 'X Wunschfrei', disabled: false };
+  return [WUNSCH_FREI, ...services];
 }
 
 function violatesMinBlock(emp, day, monthKey) {
@@ -2512,29 +2514,39 @@ function renderTickets() {
   const matchesFilter = (ticket) => filter === 'all' || ticket.status === filter;
   const matchesArea = (ticket) =>
     !allowedAreas || !allowedAreas.length || !ticket.area || allowedAreas.includes(ticket.area);
-  const openTickets = tickets.filter(
-    (t) => t.status !== 'Geschlossen' && matchesFilter(t) && matchesArea(t)
-  );
-  const closedTickets = tickets.filter(
-    (t) => t.status === 'Geschlossen' && (filter === 'all' || filter === 'Geschlossen') && matchesArea(t)
-  );
-  if (!openTickets.length && !closedTickets.length) {
+  const openTickets = tickets.filter((t) => t.status !== 'Geschlossen' && matchesArea(t));
+  const closedTickets = tickets.filter((t) => t.status === 'Geschlossen' && matchesArea(t));
+  const statusOrder = ['Offen', 'in Bearbeitung', 'Zurückgestellt'];
+  const openSections = statusOrder
+    .map((status) => {
+      const list = openTickets.filter((t) => t.status === status && matchesFilter(t));
+      if (!list.length) return '';
+      return `
+        <section class="ticket-section status-${status.replace(/\s+/g, '-').toLowerCase()}">
+          <h4 class="ticket-section__title">${status}</h4>
+          <div class="ticket-section__grid">${list.map(renderCard).join('')}</div>
+        </section>`;
+    })
+    .join('');
+  const closedMatches = closedTickets.filter((t) => matchesFilter(t));
+  if (!openSections && !closedMatches.length) {
     ticketList.innerHTML = '<p class="muted">Noch keine Tickets vorhanden.</p>';
     return;
   }
   const renderCard = (ticket) => {
     const created = new Date(ticket.createdAt).toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' });
     const updateList = (ticket.updates || [])
-      .map(
-        (entry) => `
+      .map((entry) => {
+        const actor = entry.actor ? ` · ${escapeHtml(entry.actor)}` : '';
+        return `
             <li>
               <small>${new Date(entry.timestamp).toLocaleString('de-AT', {
                 dateStyle: 'short',
                 timeStyle: 'short',
-              })} · ${entry.status}${entry.notify ? ' · Benachrichtigung' : ''}</small>
+              })} · ${entry.status}${actor}${entry.notify ? ' · Benachrichtigung' : ''}</small>
               <p>${escapeHtml(entry.note || 'Aktualisiert')}</p>
-            </li>`
-      )
+            </li>`;
+      })
       .join('');
     const statusOptions = TICKET_STATUSES.map(
       (status) => `<option value="${status}" ${ticket.status === status ? 'selected' : ''}>${status}</option>`
@@ -2590,16 +2602,13 @@ function renderTickets() {
           ${activity}
         </article>`;
   };
-  const openSection = openTickets.length
-    ? `<div class="ticket-section"><div class="ticket-section__grid">${openTickets.map(renderCard).join('')}</div></div>`
-    : '';
-  const closedSection = closedTickets.length
-    ? `<details class="ticket-section closed"><summary>Geschlossene Tickets (${closedTickets.length})</summary><div class="ticket-section__grid">${closedTickets
-        .map(renderCard)
-        .join('')}</div></details>`
-    : '';
-  ticketList.innerHTML = openSection + closedSection;
-}
+    const closedSection = closedMatches.length
+      ? `<details class="ticket-section closed"><summary>Geschlossene Tickets (${closedMatches.length})</summary><div class="ticket-section__grid">${closedMatches
+          .map(renderCard)
+          .join('')}</div></details>`
+      : '';
+    ticketList.innerHTML = openSections + closedSection;
+  }
 
 function updateTicketActionLabel(card) {
   if (!card) return;
@@ -3480,7 +3489,8 @@ function buildEmployeeRow(emp, monthKey, days, markAssignmentsDirty) {
     let includesAssigned = false;
     serviceOptions.forEach((s) => {
       if (assign === s.id) includesAssigned = true;
-      selectPieces.push(`<option value="${s.id}" ${assign === s.id ? 'selected' : ''}>${s.name}</option>`);
+      const disabled = s.disabled ? 'disabled' : '';
+      selectPieces.push(`<option value="${s.id}" ${assign === s.id ? 'selected' : ''} ${disabled}>${s.name}</option>`);
     });
     if (assign && !includesAssigned) {
       const fallbackService = state.services.find((s) => s.id === assign);
@@ -3509,7 +3519,9 @@ function buildEmployeeRow(emp, monthKey, days, markAssignmentsDirty) {
     const absenceMeta = showVacation ? VACATION_TYPES[vacationEntry.type] || VACATION_TYPES.vacation : null;
     const sickMeta = showSick ? SICK_TYPES[sickEntry.kind] || SICK_TYPES.sick : null;
     const showAbsence = showVacation || showSick;
-    const service = serviceOptions.find((s) => s.id === assign) || state.services.find((s) => s.id === assign);
+    const service =
+      serviceOptions.find((s) => s.id === assign) || state.services.find((s) => s.id === assign) ||
+      (assign === 'WUNSCHFREI' ? { id: 'WUNSCHFREI', name: 'Wunschfrei' } : null);
     const dateKey = formatISODate(d);
     const clearedServiceId =
       (vacationEntry?.clearedAssignments && vacationEntry.clearedAssignments[dateKey]) ||
@@ -3733,7 +3745,19 @@ function handleRosterChange(e) {
     const monthKey = getMonthKey(currentMonth);
     ensureMonthMaps(monthKey);
     if (!state.assignments[monthKey][emp]) state.assignments[monthKey][emp] = {};
-    state.assignments[monthKey][emp][day] = e.target.value;
+    const previous = state.assignments[monthKey][emp][day] || '';
+    const nextValue = e.target.value;
+    if (nextValue === 'WUNSCHFREI') {
+      const existing = Object.entries(state.assignments[monthKey][emp] || {}).filter(
+        ([d, v]) => v === 'WUNSCHFREI' && Number(d) !== day
+      ).length;
+      if (existing >= 3) {
+        showNotification('Maximal 3 Wunschfrei-Tage pro Monat erlaubt', 'error');
+        e.target.value = previous;
+        return;
+      }
+    }
+    state.assignments[monthKey][emp][day] = nextValue;
     saveState();
     renderRoster();
   }
@@ -4899,6 +4923,22 @@ function handleTicketFilterChange() {
   renderTickets();
 }
 
+function sendTicketEmail(ticket, body) {
+  if (!ticket?.reporterEmail) {
+    showNotification('Keine E-Mail-Adresse des Einmelders hinterlegt', 'error');
+    return;
+  }
+  const payload = {
+    to: ticket.reporterEmail,
+    subject: `${ticket.ticketNumber || ticket.id} - ${ticket.name}`,
+    body,
+    sentAt: new Date().toISOString(),
+  };
+  state.sentEmails = [payload, ...(state.sentEmails || [])].slice(0, 200);
+  saveState();
+  showNotification('E-Mail-Benachrichtigung versendet', 'success');
+}
+
 function handleTicketCardAction(event) {
   const button = event.target.closest('button[data-ticket-submit]');
   if (!button) return;
@@ -4917,15 +4957,16 @@ function handleTicketCardAction(event) {
   const note = (noteField?.value || '').trim();
   const notify = !!notifyField?.checked;
   const previousStatus = ticket.status;
+  const actor = currentUser?.name || 'Hans Maier';
   const timestamp = new Date().toISOString();
   const timestampLabel = new Date(timestamp).toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' });
   let autoNote = 'Aktualisiert';
   if (status === 'in Bearbeitung' && previousStatus !== 'in Bearbeitung') {
-    autoNote = `Bearbeitung übernommen durch Hans Maier am ${timestampLabel}`;
+    autoNote = `Bearbeitung übernommen durch ${actor} am ${timestampLabel}`;
   } else if (status === 'Geschlossen' && previousStatus !== 'Geschlossen') {
-    autoNote = `Ticket abgeschlossen am ${timestampLabel}`;
+    autoNote = `Ticket abgeschlossen von ${actor} am ${timestampLabel}`;
   } else if (status !== previousStatus) {
-    autoNote = `Status geändert: ${previousStatus} → ${status} (${timestampLabel})`;
+    autoNote = `Status geändert durch ${actor}: ${previousStatus} → ${status} (${timestampLabel})`;
   }
   const entry = {
     id: uuid(),
@@ -4933,10 +4974,11 @@ function handleTicketCardAction(event) {
     note: note || autoNote,
     timestamp,
     notify,
+    actor,
   };
   ticket.status = status;
   if (status === 'in Bearbeitung') {
-    ticket.assignee = 'Hans Maier';
+    ticket.assignee = actor;
     ticket.assignedAt = timestamp;
   }
   ticket.closedAt = status === 'Geschlossen' ? timestamp : status === previousStatus ? ticket.closedAt || '' : '';
@@ -4949,9 +4991,8 @@ function handleTicketCardAction(event) {
   renderTickets();
   showNotification('Änderung erfolgreich gespeichert', 'success');
   if (notify && ticket.reporterEmail) {
-    alert(
-      `E-Mail an ${ticket.reporterName || 'Einmelder'} (${ticket.reporterEmail}):\n${ticket.name}\nStatus: ${status}\n${note || 'Kein zusätzlicher Text'}`
-    );
+    const body = `${note || autoNote}\nStatus: ${status}\nTicket: ${ticket.ticketNumber || ticket.id} - ${ticket.name}`;
+    sendTicketEmail(ticket, body);
   }
 }
 
