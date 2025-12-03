@@ -397,6 +397,20 @@ let missionResults = new Map();
 let missionIntervalId = null;
 let lastMissionUpdate = null;
 
+function forceDefaultLogin() {
+  const defaultId = '05475';
+  const entry = USERS[defaultId];
+  if (!entry) return false;
+  currentUser = buildUserSession(defaultId, entry);
+  if (loginUser) loginUser.value = defaultId;
+  if (loginPassword) loginPassword.value = entry.password;
+  if (ticketReporterInput) ticketReporterInput.value = currentUser.name || 'Alois Reichsöllner';
+  if (ticketReporterEmailInput && currentUser.employeeEmail) ticketReporterEmailInput.value = currentUser.employeeEmail;
+  applyPermissions();
+  showScreen('roster');
+  return true;
+}
+
 function loadState() {
   const employment = loadArray(STORAGE_KEYS.employmentTypes, DEFAULT_EMPLOYMENT);
   const services = loadArray(STORAGE_KEYS.services, DEFAULT_SERVICES);
@@ -3206,16 +3220,7 @@ function handleLogout() {
 }
 
 function autoLoginDefaultUser() {
-  const defaultId = '05475';
-  const entry = USERS[defaultId];
-  if (!entry) return;
-  currentUser = buildUserSession(defaultId, entry);
-  if (loginUser) loginUser.value = defaultId;
-  if (loginPassword) loginPassword.value = entry.password;
-  if (ticketReporterInput) ticketReporterInput.value = currentUser.name || 'Alois Reichsöllner';
-  if (ticketReporterEmailInput && currentUser.employeeEmail) ticketReporterEmailInput.value = currentUser.employeeEmail;
-  applyPermissions();
-  showScreen('roster');
+  forceDefaultLogin();
 }
 
 function showScreen(target) {
@@ -5134,6 +5139,7 @@ function init() {
   updateDropdowns();
   if (loginStatus) loginStatus.textContent = 'Bitte einloggen.';
   if (employeeExitBtn) employeeExitBtn.disabled = true;
+  forceDefaultLogin();
   updateExitedEmployees();
   renderEmployees();
   renderServices();
@@ -5147,7 +5153,6 @@ function init() {
   renderTickets();
   renderMissionBoard();
   wireEvents();
-  autoLoginDefaultUser();
   applyPermissions();
 }
 
