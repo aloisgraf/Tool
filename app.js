@@ -2532,22 +2532,6 @@ function renderTickets() {
   const openTickets = tickets.filter((t) => t.status !== 'Geschlossen' && matchesArea(t));
   const closedTickets = tickets.filter((t) => t.status === 'Geschlossen' && matchesArea(t));
   const statusOrder = ['Offen', 'in Bearbeitung', 'Zurückgestellt'];
-  const openSections = statusOrder
-    .map((status) => {
-      const list = openTickets.filter((t) => t.status === status && matchesFilter(t));
-      if (!list.length) return '';
-      return `
-        <section class="ticket-section status-${status.replace(/\s+/g, '-').toLowerCase()}">
-          <h4 class="ticket-section__title">${status}</h4>
-          <div class="ticket-section__grid">${list.map(renderCard).join('')}</div>
-        </section>`;
-    })
-    .join('');
-  const closedMatches = closedTickets.filter((t) => matchesFilter(t));
-  if (!openSections && !closedMatches.length) {
-    ticketList.innerHTML = '<p class="muted">Noch keine Tickets vorhanden.</p>';
-    return;
-  }
   const renderCard = (ticket) => {
     const created = new Date(ticket.createdAt).toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' });
     const updateList = (ticket.updates || [])
@@ -2617,13 +2601,29 @@ function renderTickets() {
           ${activity}
         </article>`;
   };
-    const closedSection = closedMatches.length
-      ? `<details class="ticket-section closed"><summary>Geschlossene Tickets (${closedMatches.length})</summary><div class="ticket-section__grid">${closedMatches
+  const openSections = statusOrder
+    .map((status) => {
+      const list = openTickets.filter((t) => t.status === status && matchesFilter(t));
+      if (!list.length) return '';
+      return `
+        <section class="ticket-section status-${status.replace(/\s+/g, '-').toLowerCase()}">
+          <h4 class="ticket-section__title">${status}</h4>
+          <div class="ticket-section__grid">${list.map(renderCard).join('')}</div>
+        </section>`;
+    })
+    .join('');
+  const closedMatches = closedTickets.filter((t) => matchesFilter(t));
+  if (!openSections && !closedMatches.length) {
+    ticketList.innerHTML = '<p class="muted">Noch keine Tickets vorhanden.</p>';
+    return;
+  }
+  const closedSection = closedMatches.length
+    ? `<details class="ticket-section closed"><summary>Geschlossene Tickets (${closedMatches.length})</summary><div class="ticket-section__grid">${closedMatches
           .map(renderCard)
           .join('')}</div></details>`
-      : '';
-    ticketList.innerHTML = openSections + closedSection;
-  }
+    : '';
+  ticketList.innerHTML = openSections + closedSection;
+}
 
 function updateTicketActionLabel(card) {
   if (!card) return;
