@@ -169,7 +169,6 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     ticketPermission: 'edit',
     admin: false,
     vacationApproval: false,
-    rosterApproval: false,
     areas: AREAS,
     status: 'active',
   },
@@ -198,7 +197,6 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     ticketPermission: 'edit',
     admin: false,
     vacationApproval: false,
-    rosterApproval: false,
     areas: AREAS,
     status: 'active',
   },
@@ -227,7 +225,6 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     ticketPermission: 'edit',
     admin: false,
     vacationApproval: false,
-    rosterApproval: false,
     areas: AREAS,
     status: 'active',
   },
@@ -256,7 +253,6 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     ticketPermission: 'edit',
     admin: false,
     vacationApproval: false,
-    rosterApproval: false,
     areas: AREAS,
     status: 'active',
   },
@@ -491,7 +487,6 @@ function loadState() {
       areas,
       admin: !!emp.admin,
       vacationApproval: !!emp.vacationApproval,
-      rosterApproval: !!emp.rosterApproval,
       rosterPermission: emp.rosterPermission || 'write',
       ticketPermission: emp.ticketPermission || 'edit',
     };
@@ -534,7 +529,6 @@ function loadState() {
     lastName: 'Reichsöllner',
     admin: true,
     vacationApproval: true,
-    rosterApproval: true,
     ticketPermission: 'edit',
     rosterPermission: 'write',
     areas: AREAS,
@@ -2238,7 +2232,7 @@ function decideVacation(empId, vacationId, approved, reason = '') {
   renderEmployees();
   renderOverview();
   renderRoster();
-  showNotification(approved ? 'Urlaub freigegeben' : 'Urlaub abgelehnt', approved ? 'success' : 'error');
+  showNotification(approved ? 'Antrag freigegeben' : 'Antrag abgelehnt', approved ? 'success' : 'error');
 }
 
 function handleOverviewClick(event) {
@@ -2930,7 +2924,7 @@ function renderOverview() {
             .map(({ date, service }) => `${formatShortDate(date)}: ${escapeHtml(service.name)}`)
             .join('<br>')
         : '<span class="muted">Keine Dienste geplant</span>';
-      return `<article class="item"><div class="item__header"><strong>${escapeHtml(formatName(emp))}</strong></div><p>${label}</p></article>`;
+      return `<article class="item"><p>${label}</p></article>`;
     })
     .join('');
   overviewServices.innerHTML = serviceCards || '<p class="muted">Keine Mitarbeiter sichtbar.</p>';
@@ -2953,7 +2947,7 @@ function renderOverview() {
             })
             .join('<br>')
         : '<span class="muted">Keine Urlaube geplant</span>';
-      return `<article class="item"><div class="item__header"><strong>${escapeHtml(formatName(emp))}</strong></div><p>${label}</p></article>`;
+      return `<article class="item"><p>${label}</p></article>`;
     })
     .join('');
   overviewVacations.innerHTML = vacationCards || '<p class="muted">Keine Mitarbeiter sichtbar.</p>';
@@ -3048,7 +3042,6 @@ function fillEmployeeForm(emp) {
   form.holidayFactor.value = emp.holidayFactor ?? 0;
   form.dailyWorkHours.value = emp.dailyWorkHours ?? 0;
   form.vacationApproval.checked = !!emp.vacationApproval;
-  form.rosterApproval.checked = !!emp.rosterApproval;
   form.hireDate.value = emp.hireDate || '';
   form.endDate.value = emp.endDate || '';
   form.nightAllowed.checked = !!emp.nightAllowed;
@@ -3145,9 +3138,6 @@ function handleEmployeeForm(e) {
     vacationApproval: data.has('vacationApproval')
       ? data.get('vacationApproval') === 'on'
       : !!existing?.vacationApproval,
-    rosterApproval: data.has('rosterApproval')
-      ? data.get('rosterApproval') === 'on'
-      : !!existing?.rosterApproval,
     hireDate: data.get('hireDate') || '',
     endDate: data.get('endDate') || '',
     nightAllowed: data.get('nightAllowed') === 'on',
@@ -3538,7 +3528,6 @@ function buildUserSession(userId, entry) {
     basePermissions.tickets = emp.ticketPermission === 'edit' ? 'edit' : 'create';
     if (emp.admin) basePermissions.admin = true;
     if (emp.vacationApproval) basePermissions.vacationApproval = true;
-    if (emp.rosterApproval) basePermissions.rosterApproval = true;
   }
   return {
     id: userId,
@@ -3628,6 +3617,9 @@ function handleLogin(event) {
   currentUser = buildUserSession(userId, entry);
   applyPermissions();
   showScreen('overview');
+  if (loginUser) loginUser.value = '';
+  if (loginPassword) loginPassword.value = '';
+  if (logoutBtn) logoutBtn.hidden = false;
   showNotification('Login erfolgreich', 'success');
 }
 
@@ -5333,6 +5325,16 @@ function syncEmploymentHours() {
 
 function handleEmployeePickerChange() {
   const id = employeePicker.value;
+  const isAdmin = !!currentUser?.permissions?.admin;
+  const selfEmp = getCurrentEmployee();
+  if (!isAdmin && selfEmp && id !== selfEmp.id) {
+    employeePicker.value = selfEmp.id;
+    editing.employee = selfEmp.id;
+    fillEmployeeForm(selfEmp);
+    renderVacationPanel(selfEmp);
+    renderSickPanel(selfEmp);
+    return;
+  }
   if (!id) {
     editing.employee = null;
     employeeForm.reset();

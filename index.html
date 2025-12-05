@@ -206,6 +206,8 @@
             </div>
             <fieldset class="grouped" id="adminSettings">
               <legend>Admin Einstellungen</legend>
+              <label class="checkbox"><input type="checkbox" name="admin"> Admin</label>
+              <label class="checkbox"><input type="checkbox" name="vacationApproval"> Freigabe Urlaube</label>
               <label>Bereiche
                 <select name="areas" id="employeeAreas" multiple size="3"></select>
               </label>
@@ -214,7 +216,6 @@
                   <legend>Dienstplan-Rechte</legend>
                   <label class="radio"><input type="radio" name="rosterPermission" value="write"> Dienstplan schreiben</label>
                   <label class="radio"><input type="radio" name="rosterPermission" value="read"> Dienstplan lesen</label>
-                  <label class="checkbox"><input type="checkbox" name="rosterApproval"> Freigabe Dienstplan</label>
                 </fieldset>
                 <fieldset class="radio-row">
                   <legend>Ticket-Rechte</legend>
@@ -222,7 +223,6 @@
                   <label class="radio"><input type="radio" name="ticketPermission" value="edit"> Tickets bearbeiten</label>
                 </fieldset>
               </div>
-              <label class="checkbox"><input type="checkbox" name="admin"> Admin</label>
             </fieldset>
             <fieldset class="grouped" id="planningSettings">
               <legend>Dienstplaneinstellungen</legend>
@@ -253,9 +253,6 @@
                   <input type="checkbox" name="rkt"> RKT
                 </label>
               </div>
-              <label class="checkbox">
-                <input type="checkbox" name="vacationApproval"> Freigabe Urlaube
-              </label>
             </fieldset>
             <div class="form-actions">
               <button type="submit" class="primary">Speichern</button>
