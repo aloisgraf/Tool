@@ -5322,6 +5322,7 @@ function clearRosterAssignments() {
 }
 
 function syncEmploymentHours() {
+  if (!employmentPercentSelect || !employmentHoursSelect) return;
   employmentPercentSelect.addEventListener('change', () => {
     const selected = state.employment.find((e) => e.id === employmentPercentSelect.value);
     if (selected) {
@@ -5521,56 +5522,66 @@ function handleTicketCardAction(event) {
 }
 
 function wireEvents() {
-  if (loginForm) loginForm.addEventListener('submit', handleLogin);
-  if (logoutBtn) logoutBtn.addEventListener('click', handleLogout);
-  menuButtons.forEach((btn) => btn.addEventListener('click', () => showScreen(btn.dataset.target)));
-  employeeForm.addEventListener('submit', handleEmployeeForm);
-  employeeForm.addEventListener('reset', handleEmployeeFormReset);
-  if (employeeExitBtn) employeeExitBtn.addEventListener('click', handleEmployeeExit);
-  if (employeeList) employeeList.addEventListener('click', handleEmployeeListClick);
-  if (overviewApprovals) overviewApprovals.addEventListener('click', handleOverviewClick);
-  serviceForm.addEventListener('submit', handleServiceForm);
-  functionForm.addEventListener('submit', handleFunctionForm);
-  functionForm.addEventListener('reset', () => {
+  const on = (el, event, handler) => {
+    if (el && typeof el.addEventListener === 'function') el.addEventListener(event, handler);
+  };
+  const onAll = (list, event, handler) => {
+    if (!list) return;
+    list.forEach((el) => on(el, event, handler));
+  };
+
+  on(loginForm, 'submit', handleLogin);
+  on(logoutBtn, 'click', handleLogout);
+  onAll(menuButtons, 'click', (evt) => showScreen(evt.currentTarget.dataset.target));
+  on(employeeForm, 'submit', handleEmployeeForm);
+  on(employeeForm, 'reset', handleEmployeeFormReset);
+  on(employeeExitBtn, 'click', handleEmployeeExit);
+  on(employeeList, 'click', handleEmployeeListClick);
+  on(overviewApprovals, 'click', handleOverviewClick);
+  on(serviceForm, 'submit', handleServiceForm);
+  on(functionForm, 'submit', handleFunctionForm);
+  on(functionForm, 'reset', () => {
     editing.function = null;
     renderFunctionServiceChoices([]);
   });
-  if (functionList) functionList.addEventListener('click', handleFunctionListClick);
-  employmentForm.addEventListener('submit', handleEmploymentForm);
-  rulesForm.addEventListener('submit', handleRulesForm);
-  rosterTable.addEventListener('change', handleRosterChange);
-  rosterTable.addEventListener('click', handleRosterClick);
-  rosterTable.addEventListener('dragstart', handleRowDragStart);
-  rosterTable.addEventListener('dragover', handleRowDragOver);
-  rosterTable.addEventListener('drop', handleRowDrop);
-  rosterTable.addEventListener('dragend', handleRowDragEnd);
-  employeePicker.addEventListener('change', handleEmployeePickerChange);
-  servicePicker.addEventListener('change', handleServicePickerChange);
-  functionPicker.addEventListener('change', handleFunctionPickerChange);
-  employmentPicker.addEventListener('change', handleEmploymentPickerChange);
-  prevMonthBtn.addEventListener('click', () => {
+  on(functionList, 'click', handleFunctionListClick);
+  on(employmentForm, 'submit', handleEmploymentForm);
+  on(rulesForm, 'submit', handleRulesForm);
+  on(rosterTable, 'change', handleRosterChange);
+  on(rosterTable, 'click', handleRosterClick);
+  on(rosterTable, 'dragstart', handleRowDragStart);
+  on(rosterTable, 'dragover', handleRowDragOver);
+  on(rosterTable, 'drop', handleRowDrop);
+  on(rosterTable, 'dragend', handleRowDragEnd);
+  on(employeePicker, 'change', handleEmployeePickerChange);
+  on(servicePicker, 'change', handleServicePickerChange);
+  on(functionPicker, 'change', handleFunctionPickerChange);
+  on(employmentPicker, 'change', handleEmploymentPickerChange);
+  on(prevMonthBtn, 'click', () => {
     currentMonth.setMonth(currentMonth.getMonth() - 1);
     renderRoster();
     renderEmployees();
   });
-  nextMonthBtn.addEventListener('click', () => {
+  on(nextMonthBtn, 'click', () => {
     currentMonth.setMonth(currentMonth.getMonth() + 1);
     renderRoster();
     renderEmployees();
   });
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowLeft') {
-      currentMonth.setMonth(currentMonth.getMonth() - 1);
-      renderRoster();
-      renderEmployees();
-    }
-    if (e.key === 'ArrowRight') {
-      currentMonth.setMonth(currentMonth.getMonth() + 1);
-      renderRoster();
-      renderEmployees();
-    }
-  });
-  generateBtn.addEventListener('click', () => {
+  if (typeof window !== 'undefined') {
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowLeft') {
+        currentMonth.setMonth(currentMonth.getMonth() - 1);
+        renderRoster();
+        renderEmployees();
+      }
+      if (e.key === 'ArrowRight') {
+        currentMonth.setMonth(currentMonth.getMonth() + 1);
+        renderRoster();
+        renderEmployees();
+      }
+    });
+  }
+  on(generateBtn, 'click', () => {
     if (!canEditRoster()) {
       showNotification('Keine Berechtigung zum Generieren', 'error');
       return;
@@ -5580,66 +5591,60 @@ function wireEvents() {
       showNotification('Dienstplan erfolgreich generiert', 'success');
     }
   });
-  if (clearBtn) {
-    clearBtn.addEventListener('click', () => {
-      if (!canEditRoster()) {
-        showNotification('Keine Berechtigung', 'error');
-        return;
-      }
-      if (confirm('Dienstplan-Einträge für diesen Monat leeren? Urlaube, Krankenstände und gesperrte Tage bleiben erhalten.')) {
-        clearRosterAssignments();
-        showNotification('Dienstplan bereinigt', 'success');
-      }
-    });
-  }
-  saveFileBtn.addEventListener('click', downloadStateFile);
-  loadFileBtn.addEventListener('click', () => loadFileInput.click());
-  loadFileInput.addEventListener('change', (e) => {
+  on(clearBtn, 'click', () => {
+    if (!canEditRoster()) {
+      showNotification('Keine Berechtigung', 'error');
+      return;
+    }
+    if (confirm('Dienstplan-Einträge für diesen Monat leeren? Urlaube, Krankenstände und gesperrte Tage bleiben erhalten.')) {
+      clearRosterAssignments();
+      showNotification('Dienstplan bereinigt', 'success');
+    }
+  });
+  on(saveFileBtn, 'click', downloadStateFile);
+  on(loadFileBtn, 'click', () => loadFileInput?.click());
+  on(loadFileInput, 'change', (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     file.text().then(importState).finally(() => {
       loadFileInput.value = '';
     });
   });
-  if (addVacationBtn) addVacationBtn.addEventListener('click', handleAddVacation);
-  if (vacationTypeSelect) vacationTypeSelect.addEventListener('change', updateVacationReasonVisibility);
-  if (vacationList) vacationList.addEventListener('click', handleVacationListClick);
-  if (addSickBtn) addSickBtn.addEventListener('click', handleAddSick);
+  on(addVacationBtn, 'click', handleAddVacation);
+  on(vacationTypeSelect, 'change', updateVacationReasonVisibility);
+  on(vacationList, 'click', handleVacationListClick);
+  on(addSickBtn, 'click', handleAddSick);
   if (sickList) {
-    sickList.addEventListener('click', handleSickListClick);
-    sickList.addEventListener('change', handleSickListChange);
+    on(sickList, 'click', handleSickListClick);
+    on(sickList, 'change', handleSickListChange);
   }
-  if (vacationLimitForm) vacationLimitForm.addEventListener('submit', handleVacationLimitSubmit);
-  if (vacationLimitList) vacationLimitList.addEventListener('click', handleVacationLimitListClick);
-  if (themeToggle) {
-    themeToggle.addEventListener('click', () => applyTheme(currentTheme === 'light' ? 'dark' : 'light'));
-  }
+  on(vacationLimitForm, 'submit', handleVacationLimitSubmit);
+  on(vacationLimitList, 'click', handleVacationLimitListClick);
+  on(themeToggle, 'click', () => applyTheme(currentTheme === 'light' ? 'dark' : 'light'));
   if (rosterModeButtons.length) {
     rosterModeButtons.forEach((btn) => {
-      btn.addEventListener('click', () => setRosterMode(btn.dataset.rosterMode || 'edit'));
+      on(btn, 'click', () => setRosterMode(btn.dataset.rosterMode || 'edit'));
     });
   }
-  if (printPlanBtn) {
-    printPlanBtn.addEventListener('click', handlePrintPlan);
-  }
-  if (createGroupBtn) createGroupBtn.addEventListener('click', handleCreateGroup);
-  if (assignGroupBtn) assignGroupBtn.addEventListener('click', handleAssignGroup);
-  if (removeGroupBtn) removeGroupBtn.addEventListener('click', handleRemoveGroup);
-  if (groupSelect) groupSelect.addEventListener('change', updateRowToolStates);
-  if (ticketForm) ticketForm.addEventListener('submit', handleTicketSubmit);
-  if (ticketForm) ticketForm.addEventListener('reset', () => {
+  on(printPlanBtn, 'click', handlePrintPlan);
+  on(createGroupBtn, 'click', handleCreateGroup);
+  on(assignGroupBtn, 'click', handleAssignGroup);
+  on(removeGroupBtn, 'click', handleRemoveGroup);
+  on(groupSelect, 'change', updateRowToolStates);
+  on(ticketForm, 'submit', handleTicketSubmit);
+  on(ticketForm, 'reset', () => {
     if (ticketPriorityInput) ticketPriorityInput.value = 'mittel';
     if (ticketReporterInput) ticketReporterInput.value = 'Alois Reichsöllner';
     autoFillTicketReporterEmail(true);
     if (ticketAreaInput) ticketAreaInput.value = AREAS[0];
   });
-  if (ticketStatusFilter) ticketStatusFilter.addEventListener('change', handleTicketFilterChange);
+  on(ticketStatusFilter, 'change', handleTicketFilterChange);
   if (ticketList) {
-    ticketList.addEventListener('click', handleTicketCardAction);
-    ticketList.addEventListener('change', handleTicketCardChange);
+    on(ticketList, 'click', handleTicketCardAction);
+    on(ticketList, 'change', handleTicketCardChange);
   }
-  if (missionSaveBtn) missionSaveBtn.addEventListener('click', handleMissionSave);
-  if (missionRefreshBtn) missionRefreshBtn.addEventListener('click', () => refreshMissionFeed(true));
+  on(missionSaveBtn, 'click', handleMissionSave);
+  on(missionRefreshBtn, 'click', () => refreshMissionFeed(true));
   syncEmploymentHours();
 }
 
@@ -5655,25 +5660,40 @@ function handlePrintPlan() {
 }
 
 function init() {
-  applyTheme(currentTheme);
-  updateDropdowns();
-  if (loginStatus) loginStatus.textContent = 'Bitte einloggen.';
-  if (employeeExitBtn) employeeExitBtn.disabled = true;
-  updateExitedEmployees();
-  renderEmployees();
-  renderServices();
-  renderFunctions();
-  renderEmployment();
-  setupWeekdayInteractions();
-  renderRules();
-  renderRoster();
-  renderLogs();
-  updateVacationReasonVisibility();
-  renderTickets();
-  renderMissionBoard();
-  wireEvents();
-  forceDefaultLogin();
-  applyPermissions();
+  const steps = [];
+  const run = (label, fn) => {
+    try {
+      fn();
+      return true;
+    } catch (err) {
+      console.error(`Fehler in Schritt ${label}`, err);
+      return false;
+    }
+  };
+
+  steps.push(run('applyTheme', () => applyTheme(currentTheme)));
+  steps.push(run('updateDropdowns', updateDropdowns));
+  steps.push(run('setLoginStatus', () => (loginStatus ? (loginStatus.textContent = 'Bitte einloggen.') : null)));
+  steps.push(run('disableExit', () => (employeeExitBtn ? (employeeExitBtn.disabled = true) : null)));
+  steps.push(run('updateExitedEmployees', () => updateExitedEmployees()));
+  steps.push(run('renderEmployees', renderEmployees));
+  steps.push(run('renderServices', renderServices));
+  steps.push(run('renderFunctions', renderFunctions));
+  steps.push(run('renderEmployment', renderEmployment));
+  steps.push(run('setupWeekdayInteractions', setupWeekdayInteractions));
+  steps.push(run('renderRules', renderRules));
+  steps.push(run('renderRoster', renderRoster));
+  steps.push(run('renderLogs', renderLogs));
+  steps.push(run('updateVacationReasonVisibility', updateVacationReasonVisibility));
+  steps.push(run('renderTickets', renderTickets));
+  steps.push(run('renderMissionBoard', renderMissionBoard));
+  steps.push(run('wireEvents', wireEvents));
+  steps.push(run('forceDefaultLogin', forceDefaultLogin));
+  steps.push(run('applyPermissions', applyPermissions));
+
+  if (steps.some((ok) => !ok)) {
+    showNotification('Fehler beim Starten der Anwendung', 'error');
+  }
 }
 
 function initSafely() {
