@@ -442,13 +442,13 @@ const logElements = {
   functions: functionsLog,
 };
 
-let state = loadState();
-state.vacationLimits = Array.isArray(state.vacationLimits) ? state.vacationLimits : [];
-state.missionSettings = state.missionSettings || DEFAULT_MISSION_SETTINGS;
+let state = null;
 let currentMonth = new Date();
 currentMonth.setDate(1);
 const editing = { employee: null, service: null, function: null, employment: null };
-let weekdaySelections = ensureWeekdaySelections(currentWeekdayRule()?.services || {}, state.services);
+let weekdaySelections = null;
+
+hydrateStateFromStorage();
 let selectedRows = new Set();
 let draggingRowId = null;
 let rosterMode = 'edit';
@@ -586,6 +586,14 @@ function loadState() {
     tickets,
     missionSettings,
   };
+}
+
+function hydrateStateFromStorage() {
+  state = loadState();
+  state.vacationLimits = Array.isArray(state.vacationLimits) ? state.vacationLimits : [];
+  state.missionSettings = state.missionSettings || DEFAULT_MISSION_SETTINGS;
+  weekdaySelections = ensureWeekdaySelections(currentWeekdayRule()?.services || {}, state.services);
+  ensureMonthMaps(getMonthKey(currentMonth));
 }
 
 function loadArray(key, fallback) {
@@ -2172,6 +2180,7 @@ function handleAddVacation() {
   renderRoster();
   vacationStartInput.value = '';
   vacationEndInput.value = '';
+  if (vacationTypeSelect) vacationTypeSelect.value = 'vacation';
   if (vacationReasonInput) vacationReasonInput.value = '';
   updateVacationReasonVisibility();
 }
@@ -2241,6 +2250,7 @@ function handleOverviewClick(event) {
   if (!approveBtn && !rejectBtn) return;
   const empId = (approveBtn || rejectBtn).dataset.emp;
   const vacationId = approveBtn ? approveBtn.dataset.approveVacation : rejectBtn.dataset.rejectVacation;
+  const card = (approveBtn || rejectBtn).closest('.item');
   if (!empId || !vacationId) return;
   if (rejectBtn) {
     const reason = prompt('Begründung für die Ablehnung (optional):', '') || '';
@@ -2248,6 +2258,7 @@ function handleOverviewClick(event) {
   } else {
     decideVacation(empId, vacationId, true, '');
   }
+  if (card) card.remove();
 }
 
 function handleAddSick() {
@@ -3606,6 +3617,7 @@ function applyPermissions() {
 
 function handleLogin(event) {
   event.preventDefault();
+  hydrateStateFromStorage();
   const userId = loginUser?.value?.trim();
   const password = loginPassword?.value || '';
   const entry = userId ? USERS[userId] : null;
