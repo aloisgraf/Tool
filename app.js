@@ -4773,6 +4773,7 @@ function generateRoster() {
     let unqualified = 0;
     let nightBlocked = 0;
     let ruleBlocked = 0;
+    let recommendation = null;
 
     for (const emp of rotated) {
       if (!isEmployeeActiveOnDate(emp, date)) {
@@ -4797,6 +4798,19 @@ function generateRoster() {
         skipLookahead: true,
       });
       if (!feasible) ruleBlocked++;
+
+      if (!feasible) {
+        const target = monthlyTargetHours(emp, currentMonth) || 0;
+        const current = hoursForEmployee(monthKey, emp.id);
+        const diff = target ? Math.abs(current - target) : current;
+        if (!recommendation || diff < recommendation.diff) {
+          recommendation = {
+            emp,
+            diff,
+            reason: 'Regelkonflikt/Restzeit',
+          };
+        }
+      }
     }
 
     const parts = [];
@@ -4806,7 +4820,10 @@ function generateRoster() {
     if (inactive) parts.push(`${inactive} nicht verfügbar`);
     if (ruleBlocked) parts.push(`Regeln/Restzeiten blockieren (${ruleBlocked})`);
     const reason = parts.length ? parts.join(', ') : 'keine passenden Mitarbeitenden verfügbar';
-    return `Dienst ${service.name} am ${date.toLocaleDateString('de-AT')} offen: ${reason}.`;
+    const suggestion = recommendation
+      ? ` Empfehlung: ${escapeHtml(formatName(recommendation.emp))} (beste Passung, ${recommendation.reason}).`
+      : '';
+    return `Dienst ${service.name} am ${date.toLocaleDateString('de-AT')} offen: ${reason}.${suggestion}`;
   };
 
   const recordOpenServices = () => {
