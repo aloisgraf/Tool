@@ -771,6 +771,27 @@ textarea { resize: vertical; font: inherit; }
   min-height: 8rem;
 }
 
+.light-theme .weekday-services {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+
+.light-theme .weekday-field {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  padding: .5rem;
+  border-radius: .5rem;
+}
+
+.light-theme .weekday-chip {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.light-theme .weekday-placeholder {
+  color: #64748b;
+}
+
 .ticket-form {
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }

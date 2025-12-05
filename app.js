@@ -370,6 +370,12 @@ const rulesLog = document.getElementById('rulesLog');
 const employmentLog = document.getElementById('employmentLog');
 const servicesLog = document.getElementById('servicesLog');
 const functionsLog = document.getElementById('functionsLog');
+const servicesLogDetail = document.getElementById('servicesLogDetail');
+const servicesLogDetailLabel = document.getElementById('servicesLogDetailLabel');
+const functionsLogDetail = document.getElementById('functionsLogDetail');
+const functionsLogDetailLabel = document.getElementById('functionsLogDetailLabel');
+const employmentLogDetail = document.getElementById('employmentLogDetail');
+const employmentLogDetailLabel = document.getElementById('employmentLogDetailLabel');
 const employeeAreasSelect = document.getElementById('employeeAreas');
 const logElements = {
   roster: document.getElementById('rosterLog'),
@@ -1090,6 +1096,18 @@ function appendLog(section, message, entityId) {
   state.logs[section].unshift({ id: uuid(), message, timestamp: Date.now(), entityId: entityId || null });
   state.logs[section] = state.logs[section].slice(0, 200);
   renderLogs(section);
+  if (section === 'services') {
+    const selectedId = servicePicker?.value || '';
+    renderSelectedEntityLog('services', selectedId, servicesLogDetail, servicesLogDetailLabel);
+  }
+  if (section === 'functions') {
+    const selectedId = functionPicker?.value || '';
+    renderSelectedEntityLog('functions', selectedId, functionsLogDetail, functionsLogDetailLabel);
+  }
+  if (section === 'employment') {
+    const selectedId = employmentPicker?.value || '';
+    renderSelectedEntityLog('employment', selectedId, employmentLogDetail, employmentLogDetailLabel);
+  }
 }
 
 function renderLogs(section) {
@@ -1839,6 +1857,23 @@ function renderLogDetails(section, entityId) {
   return renderDetailsSection('Logs', data);
 }
 
+function renderSelectedEntityLog(section, selectedId, targetList, labelEl) {
+  if (!targetList || !labelEl) return;
+  const entries = logsFor(section, selectedId);
+  if (!selectedId) {
+    labelEl.textContent = 'Log für ausgewählten Eintrag';
+  } else {
+    labelEl.textContent = `Log für Auswahl (${entries.length})`;
+  }
+  if (!entries.length) {
+    targetList.innerHTML = '<li class="muted">Noch keine Einträge</li>';
+    return;
+  }
+  targetList.innerHTML = entries
+    .map((entry) => `<li><small>${formatLogTimestamp(entry.timestamp)}</small><span>${entry.message}</span></li>`)
+    .join('');
+}
+
 function renderVacationPanel(emp) {
   if (!vacationPanel) return;
   if (!emp) {
@@ -2143,11 +2178,13 @@ function renderServices() {
           <div><strong>${s.name}</strong><br><small>${s.start} – ${s.end} (${formatHours(duration)}h · ${
             s.isNight ? 'Nachtdienst' : 'Tagdienst'
           })</small></div>
-          ${renderLogDetails('services', s.id)}
+        ${renderLogDetails('services', s.id)}
         </div>`;
     })
     .join('');
   renderLegend();
+  const selectedId = servicePicker?.value || '';
+  renderSelectedEntityLog('services', selectedId, servicesLogDetail, servicesLogDetailLabel);
 }
 
 function renderFunctions() {
@@ -2188,6 +2225,8 @@ function renderFunctions() {
       <div class="employee-section">${list.length ? list.map(renderEntry).join('') : '<p class="muted">Keine Einträge.</p>'}</div>
     </details>`;
   functionList.innerHTML = [renderSection('Aktive Funktionen', active, true), renderSection('Entfernt', archived)].join('');
+  const selectedId = functionPicker?.value || '';
+  renderSelectedEntityLog('functions', selectedId, functionsLogDetail, functionsLogDetailLabel);
 }
 
 function renderEmployment() {
@@ -2203,6 +2242,8 @@ function renderEmployment() {
         ${renderLogDetails('employment', e.id)}
       </div>`)
     .join('');
+  const selectedId = employmentPicker?.value || '';
+  renderSelectedEntityLog('employment', selectedId, employmentLogDetail, employmentLogDetailLabel);
 }
 
 function renderWeekdaySelects() {
@@ -3112,6 +3153,17 @@ function canEditRoster() {
   return !!currentUser && (currentUser.permissions?.admin || currentUser.permissions?.roster === 'write');
 }
 
+function getCurrentEmployee() {
+  if (!currentUser) return null;
+  return state.employees.find((e) => e.personnelNumber === currentUser.id) || null;
+}
+
+function canEditOwnWishes(emp) {
+  if (!emp || !currentUser) return false;
+  if (canEditRoster()) return false;
+  return currentUser.permissions?.roster === 'read' && emp.personnelNumber === currentUser.id;
+}
+
 function canManageTickets() {
   return !!currentUser && (currentUser.permissions?.admin || currentUser.permissions?.tickets === 'edit');
 }
@@ -3162,6 +3214,13 @@ function applyPermissions() {
     if (gate === 'tickets-create') allowed = canCreateTickets();
     el.hidden = !allowed;
   });
+  if (rowToolsMenu) rowToolsMenu.hidden = !editRoster;
+  const rosterLogPanel = rosterPanel ? rosterPanel.querySelector('.log-panel') : null;
+  if (rosterLogPanel) rosterLogPanel.hidden = !(admin || editRoster);
+  if (!editRoster && rosterMode !== 'view') {
+    rosterMode = 'view';
+    renderRoster();
+  }
   const allowedScreens = admin ? null : new Set(['roster', 'ticketCreate', 'tickets', 'missions']);
   menuButtons.forEach((btn) => {
     const allowed = loggedIn && (admin || allowedScreens.has(btn.dataset.target));
@@ -3414,10 +3473,14 @@ function buildGroupRow(group, days) {
   infoCell.innerHTML = `
     <div class="group-header">
       <strong>${group.name}</strong>
-      <span class="group-header__actions">
+      ${
+        canEditRoster()
+          ? `<span class="group-header__actions">
         <button type="button" class="ghost" data-rename-group="${group.id}">Umbenennen</button>
         <button type="button" class="ghost" data-delete-group="${group.id}">Gruppe löschen</button>
-      </span>
+      </span>`
+          : ''
+      }
     </div>
   `;
   tr.appendChild(infoCell);
@@ -3437,13 +3500,20 @@ function buildEmployeeRow(emp, monthKey, days, markAssignmentsDirty) {
   const remainingHours = targetHours - assignedHours;
   const remainingClass = remainingHours < 0 ? 'hours-remaining negative' : 'hours-remaining';
   const selected = selectedRows.has(emp.id) ? 'checked' : '';
+  const isSelf = currentUser && emp.personnelNumber === currentUser.id;
+  const selfWishOnly = canEditOwnWishes(emp);
+  const allowRowTools = canEditRoster();
   const nameCell = document.createElement('td');
   nameCell.className = 'names col-info';
   nameCell.innerHTML = `
     <div class="row-header">
-      <label class="sr-only" for="row-select-${emp.id}">Mitarbeiter auswählen</label>
+      ${
+        allowRowTools
+          ? `<label class="sr-only" for="row-select-${emp.id}">Mitarbeiter auswählen</label>
       <input type="checkbox" id="row-select-${emp.id}" data-row-select="${emp.id}" ${selected}>
-      <button type="button" class="drag-handle" data-drag-handle draggable="true" aria-label="Zeile verschieben">⋮⋮</button>
+      <button type="button" class="drag-handle" data-drag-handle draggable="true" aria-label="Zeile verschieben">⋮⋮</button>`
+          : ''
+      }
       <div class="info-cell">
         <span class="emp-name">${formatName(emp)}</span>
         <span class="emp-pnr">${emp.personnelNumber}</span>
@@ -3490,7 +3560,11 @@ function buildEmployeeRow(emp, monthKey, days, markAssignmentsDirty) {
         markAssignmentsDirty();
       }
     }
-    const serviceOptions = allowedServicesForEmployee(emp, assign);
+    const serviceOptions = allowRowTools
+      ? allowedServicesForEmployee(emp, assign)
+      : selfWishOnly
+        ? [{ id: 'WUNSCHFREI', name: 'Wunschfrei' }]
+        : [];
     const selectPieces = ['<option value="">–</option>'];
     let includesAssigned = false;
     serviceOptions.forEach((s) => {
@@ -3515,7 +3589,7 @@ function buildEmployeeRow(emp, monthKey, days, markAssignmentsDirty) {
     if (!canAssign) {
       td.classList.add('inactive');
     }
-    const selectDisabled = locked || !serviceOptions.length || !canAssign;
+    const selectDisabled = locked || !serviceOptions.length || !canAssign || (!allowRowTools && !selfWishOnly);
     const parts = ['<div class="cell">'];
     if (isBirthday) {
       parts.push('<span class="birthday-flag" title="Geburtstag">🎂</span>');
@@ -3554,17 +3628,19 @@ function buildEmployeeRow(emp, monthKey, days, markAssignmentsDirty) {
       }
     } else if (!canAssign) {
       parts.push('<span class="muted">-</span>');
-    } else if (rosterMode === 'view') {
+    } else if (rosterMode === 'view' && !selfWishOnly) {
       if (service) {
         parts.push(renderServiceChip(service));
       } else {
         parts.push('<span class="muted">–</span>');
       }
-    } else {
+    } else if (allowRowTools || selfWishOnly) {
       parts.push(`<select data-emp="${emp.id}" data-day="${day}" ${selectDisabled ? 'disabled' : ''}>${options}</select>`);
-      parts.push(
-        `<label class="lock"><input type="checkbox" data-lock="${emp.id}" data-day="${day}" ${locked ? 'checked' : ''}> <span>Sperren</span></label>`
-      );
+      if (allowRowTools) {
+        parts.push(
+          `<label class="lock"><input type="checkbox" data-lock="${emp.id}" data-day="${day}" ${locked ? 'checked' : ''}> <span>Sperren</span></label>`
+        );
+      }
     }
     parts.push('</div>');
     td.innerHTML = parts.join('');
@@ -3666,6 +3742,7 @@ function handleRosterClick(event) {
 }
 
 function handleRowDragStart(event) {
+  if (!canEditRoster()) return;
   const handle = event.target instanceof Element ? event.target.closest('[data-drag-handle]') : null;
   if (!handle) return;
   const row = handle.closest('tr[data-emp-row]');
@@ -3677,6 +3754,7 @@ function handleRowDragStart(event) {
 }
 
 function handleRowDragOver(event) {
+  if (!canEditRoster()) return;
   if (!draggingRowId) return;
   const row = event.target instanceof Element ? event.target.closest('tr[data-emp-row]') : null;
   if (!row || row.dataset.empRow === draggingRowId) return;
@@ -3685,6 +3763,7 @@ function handleRowDragOver(event) {
 }
 
 function handleRowDrop(event) {
+  if (!canEditRoster()) return;
   if (!draggingRowId) return;
   const row = event.target instanceof Element ? event.target.closest('tr[data-emp-row]') : null;
   if (!row || row.dataset.empRow === draggingRowId) return;
@@ -3730,10 +3809,15 @@ function employeeAllowedForService(emp, service) {
 }
 
 function handleRosterChange(e) {
-  if (
-    rosterMode === 'view' &&
-    (e.target.matches('select[data-emp]') || e.target.matches('input[type="checkbox"][data-lock]'))
-  ) {
+  if (e.target.matches('select[data-emp]')) {
+    const emp = state.employees.find((em) => em.id === e.target.dataset.emp);
+    const selfWishOnly = emp ? canEditOwnWishes(emp) : false;
+    if (rosterMode === 'view' && !selfWishOnly) {
+      e.preventDefault();
+      return;
+    }
+  }
+  if (e.target.matches('input[type="checkbox"][data-lock]') && !canEditRoster()) {
     e.preventDefault();
     return;
   }
@@ -3753,6 +3837,13 @@ function handleRosterChange(e) {
     if (!state.assignments[monthKey][emp]) state.assignments[monthKey][emp] = {};
     const previous = state.assignments[monthKey][emp][day] || '';
     const nextValue = e.target.value;
+    const employeeEntry = state.employees.find((em) => em.id === emp);
+    const selfWishOnly = employeeEntry ? canEditOwnWishes(employeeEntry) : false;
+    if (selfWishOnly && nextValue && nextValue !== 'WUNSCHFREI') {
+      showNotification('Nur Wunschfrei kann eingetragen werden.', 'error');
+      e.target.value = previous;
+      return;
+    }
     if (nextValue === 'WUNSCHFREI') {
       const existing = Object.entries(state.assignments[monthKey][emp] || {}).filter(
         ([d, v]) => v === 'WUNSCHFREI' && Number(d) !== day
@@ -4905,6 +4996,8 @@ function handleServicePickerChange() {
     editing.service = id;
     fillServiceForm(service);
   }
+  const selectedId = servicePicker?.value || '';
+  renderSelectedEntityLog('services', selectedId, servicesLogDetail, servicesLogDetailLabel);
 }
 
 function handleFunctionPickerChange() {
@@ -4920,6 +5013,8 @@ function handleFunctionPickerChange() {
     editing.function = id;
     fillFunctionForm(func);
   }
+  const selectedId = functionPicker?.value || '';
+  renderSelectedEntityLog('functions', selectedId, functionsLogDetail, functionsLogDetailLabel);
 }
 
 function handleEmploymentPickerChange() {
@@ -4934,6 +5029,8 @@ function handleEmploymentPickerChange() {
     editing.employment = id;
     fillEmploymentForm(entry);
   }
+  const selectedId = employmentPicker?.value || '';
+  renderSelectedEntityLog('employment', selectedId, employmentLogDetail, employmentLogDetailLabel);
 }
 
 function handleTicketSubmit(event) {
