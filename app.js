@@ -370,12 +370,6 @@ const rulesLog = document.getElementById('rulesLog');
 const employmentLog = document.getElementById('employmentLog');
 const servicesLog = document.getElementById('servicesLog');
 const functionsLog = document.getElementById('functionsLog');
-const servicesLogDetail = document.getElementById('servicesLogDetail');
-const servicesLogDetailLabel = document.getElementById('servicesLogDetailLabel');
-const functionsLogDetail = document.getElementById('functionsLogDetail');
-const functionsLogDetailLabel = document.getElementById('functionsLogDetailLabel');
-const employmentLogDetail = document.getElementById('employmentLogDetail');
-const employmentLogDetailLabel = document.getElementById('employmentLogDetailLabel');
 const employeeAreasSelect = document.getElementById('employeeAreas');
 const logElements = {
   roster: document.getElementById('rosterLog'),
@@ -1096,18 +1090,6 @@ function appendLog(section, message, entityId) {
   state.logs[section].unshift({ id: uuid(), message, timestamp: Date.now(), entityId: entityId || null });
   state.logs[section] = state.logs[section].slice(0, 200);
   renderLogs(section);
-  if (section === 'services') {
-    const selectedId = servicePicker?.value || '';
-    renderSelectedEntityLog('services', selectedId, servicesLogDetail, servicesLogDetailLabel);
-  }
-  if (section === 'functions') {
-    const selectedId = functionPicker?.value || '';
-    renderSelectedEntityLog('functions', selectedId, functionsLogDetail, functionsLogDetailLabel);
-  }
-  if (section === 'employment') {
-    const selectedId = employmentPicker?.value || '';
-    renderSelectedEntityLog('employment', selectedId, employmentLogDetail, employmentLogDetailLabel);
-  }
 }
 
 function renderLogs(section) {
@@ -1704,11 +1686,23 @@ function updateDropdowns() {
         return `<option value="${f.id}"${disabled}>${label}</option>`;
       })
       .join('');
-  const employeeOptions = state.employees
-    .filter((e) => e.status !== 'exited')
-      .map((e) => `<option value="${e.id}">${e.lastName}, ${e.firstName}</option>`)
-      .join('');
-  employeePicker.innerHTML = ['<option value="">Neu anlegen</option>', employeeOptions].join('');
+  const selfReadOnly = currentUser && !currentUser.permissions?.admin && currentUser.permissions?.roster === 'read';
+  const selfEmp = getCurrentEmployee();
+  let employeeOptions = state.employees.filter((e) => e.status !== 'exited');
+  if (selfReadOnly) {
+    employeeOptions = selfEmp ? [selfEmp] : [];
+  }
+  const employeeOptionsMarkup = employeeOptions
+    .map((e) => `<option value="${e.id}">${e.lastName}, ${e.firstName}</option>`)
+    .join('');
+  employeePicker.innerHTML = selfReadOnly
+    ? employeeOptionsMarkup || '<option value="">Kein Zugriff</option>'
+    : ['<option value="">Neu anlegen</option>', employeeOptionsMarkup].join('');
+  employeePicker.disabled = selfReadOnly && !!selfEmp;
+  if (selfReadOnly && selfEmp) {
+    employeePicker.value = selfEmp.id;
+    if (!editing.employee) editing.employee = selfEmp.id;
+  }
   servicePicker.innerHTML = ['<option value="">Neu anlegen</option>']
     .concat(state.services.map((s) => `<option value="${s.id}">${s.name}</option>`))
     .join('');
@@ -1735,7 +1729,10 @@ function renderEmployees() {
   updateDropdowns();
   if (!employeeList) return;
   if (changed) saveState();
-  if (!state.employees.length) {
+  const selfReadOnly = currentUser && !currentUser.permissions?.admin && currentUser.permissions?.roster === 'read';
+  const selfEmp = getCurrentEmployee();
+  const employees = selfReadOnly ? (selfEmp ? [selfEmp] : []) : state.employees;
+  if (!employees.length) {
     employeeList.innerHTML = '<p class="muted">Noch keine Mitarbeiter angelegt.</p>';
     renderOpenSickList();
     return;
@@ -1775,8 +1772,8 @@ function renderEmployees() {
         </div>`;
   };
 
-  const active = state.employees.filter((emp) => emp.status !== 'exited');
-  const exited = state.employees.filter((emp) => emp.status === 'exited');
+  const active = employees.filter((emp) => emp.status !== 'exited');
+  const exited = employees.filter((emp) => emp.status === 'exited');
   const renderSection = (title, list, emptyText, open = false) => `
     <details class="collapsible" ${open ? 'open' : ''}>
       <summary>${title} (${list.length})</summary>
@@ -1789,6 +1786,11 @@ function renderEmployees() {
     renderSection('Aktive Mitarbeiter', active, 'Noch keine aktiven Mitarbeiter.'),
     renderSection('Ausgeschieden', exited, 'Keine ausgeschiedenen Mitarbeiter.'),
   ].join('');
+  if (selfReadOnly && selfEmp && employeePicker.value === selfEmp.id) {
+    fillEmployeeForm(selfEmp);
+    renderVacationPanel(selfEmp);
+    renderSickPanel(selfEmp);
+  }
   renderOpenSickList();
   autoFillTicketReporterEmail();
 }
@@ -1855,23 +1857,6 @@ function buildLogOverview(section, entityId) {
 function renderLogDetails(section, entityId) {
   const data = buildLogOverview(section, entityId);
   return renderDetailsSection('Logs', data);
-}
-
-function renderSelectedEntityLog(section, selectedId, targetList, labelEl) {
-  if (!targetList || !labelEl) return;
-  const entries = logsFor(section, selectedId);
-  if (!selectedId) {
-    labelEl.textContent = 'Log für ausgewählten Eintrag';
-  } else {
-    labelEl.textContent = `Log für Auswahl (${entries.length})`;
-  }
-  if (!entries.length) {
-    targetList.innerHTML = '<li class="muted">Noch keine Einträge</li>';
-    return;
-  }
-  targetList.innerHTML = entries
-    .map((entry) => `<li><small>${formatLogTimestamp(entry.timestamp)}</small><span>${entry.message}</span></li>`)
-    .join('');
 }
 
 function renderVacationPanel(emp) {
@@ -2178,13 +2163,10 @@ function renderServices() {
           <div><strong>${s.name}</strong><br><small>${s.start} – ${s.end} (${formatHours(duration)}h · ${
             s.isNight ? 'Nachtdienst' : 'Tagdienst'
           })</small></div>
-        ${renderLogDetails('services', s.id)}
         </div>`;
     })
     .join('');
   renderLegend();
-  const selectedId = servicePicker?.value || '';
-  renderSelectedEntityLog('services', selectedId, servicesLogDetail, servicesLogDetailLabel);
 }
 
 function renderFunctions() {
@@ -2211,12 +2193,11 @@ function renderFunctions() {
           <button type="button" class="ghost" data-function-edit="${f.id}">Bearbeiten</button>
           ${
             f.status === 'removed'
-              ? `<button type="button" class="ghost" data-function-restore="${f.id}">Wiederherstellen</button>`
-              : `<button type="button" class="ghost danger" data-function-archive="${f.id}">Entfernen</button>`
-          }
-        </div>
-        <div class="service-line">${chips || '<small class="muted">Keine Dienste zugewiesen</small>'}</div>
-        ${renderLogDetails('functions', f.id)}
+          ? `<button type="button" class="ghost" data-function-restore="${f.id}">Wiederherstellen</button>`
+          : `<button type="button" class="ghost danger" data-function-archive="${f.id}">Entfernen</button>`
+      }
+    </div>
+    <div class="service-line">${chips || '<small class="muted">Keine Dienste zugewiesen</small>'}</div>
       </div>`;
   };
   const renderSection = (title, list, open = false) => `
@@ -2225,8 +2206,6 @@ function renderFunctions() {
       <div class="employee-section">${list.length ? list.map(renderEntry).join('') : '<p class="muted">Keine Einträge.</p>'}</div>
     </details>`;
   functionList.innerHTML = [renderSection('Aktive Funktionen', active, true), renderSection('Entfernt', archived)].join('');
-  const selectedId = functionPicker?.value || '';
-  renderSelectedEntityLog('functions', selectedId, functionsLogDetail, functionsLogDetailLabel);
 }
 
 function renderEmployment() {
@@ -2239,11 +2218,8 @@ function renderEmployment() {
     .map((e) => `
       <div class="item">
         <div><strong>${e.percent}%</strong><br><small>${e.hours} Stunden/Monat</small></div>
-        ${renderLogDetails('employment', e.id)}
       </div>`)
     .join('');
-  const selectedId = employmentPicker?.value || '';
-  renderSelectedEntityLog('employment', selectedId, employmentLogDetail, employmentLogDetailLabel);
 }
 
 function renderWeekdaySelects() {
@@ -2493,8 +2469,11 @@ function renderVacationLimitList() {
 
 function renderOpenSickList() {
   if (!openSickList) return;
+  const selfReadOnly = currentUser && !currentUser.permissions?.admin && currentUser.permissions?.roster === 'read';
+  const selfEmp = getCurrentEmployee();
+  const employees = selfReadOnly ? (selfEmp ? [selfEmp] : []) : state.employees;
   const entries = [];
-  state.employees.forEach((emp) => {
+  employees.forEach((emp) => {
     (emp.sickLeaves || []).forEach((entry) => {
       if (!entry.confirmed) entries.push({ emp, entry });
     });
@@ -2847,7 +2826,9 @@ function handleEmployeeForm(e) {
 
 function handleEmployeeFormReset() {
   editing.employee = null;
-  employeePicker.value = '';
+  const selfReadOnly = currentUser && !currentUser.permissions?.admin && currentUser.permissions?.roster === 'read';
+  const selfEmp = getCurrentEmployee();
+  employeePicker.value = selfReadOnly && selfEmp ? selfEmp.id : '';
   renderVacationPanel(null);
   renderSickPanel(null);
   if (employeeExitBtn) employeeExitBtn.disabled = true;
@@ -3221,7 +3202,7 @@ function applyPermissions() {
     rosterMode = 'view';
     renderRoster();
   }
-  const allowedScreens = admin ? null : new Set(['roster', 'ticketCreate', 'tickets', 'missions']);
+  const allowedScreens = admin ? null : new Set(['roster', 'ticketCreate', 'tickets', 'missions', 'employees']);
   menuButtons.forEach((btn) => {
     const allowed = loggedIn && (admin || allowedScreens.has(btn.dataset.target));
     btn.disabled = !allowed;
@@ -3244,9 +3225,11 @@ function applyPermissions() {
     });
   }
   rosterModeButtons.forEach((btn) => {
-    btn.disabled = !editRoster;
+    btn.disabled = !loggedIn;
   });
-  if (!editRoster) setRosterMode('view');
+  if (!editRoster && rosterMode !== 'view' && !canEditOwnWishes(getCurrentEmployee())) {
+    setRosterMode('view');
+  }
   if (generateBtn) generateBtn.hidden = !editRoster;
   if (clearBtn) clearBtn.hidden = !editRoster;
   if (printPlanBtn) printPlanBtn.disabled = !loggedIn;
@@ -3289,7 +3272,7 @@ function showScreen(target) {
     return;
   }
   const admin = !!currentUser?.permissions?.admin;
-  const allowedScreens = admin ? null : new Set(['roster', 'ticketCreate', 'tickets', 'missions']);
+  const allowedScreens = admin ? null : new Set(['roster', 'ticketCreate', 'tickets', 'missions', 'employees']);
   if (!admin && !allowedScreens.has(target)) {
     showNotification('Keine Berechtigung für diesen Bereich', 'error');
     return;
@@ -4996,8 +4979,6 @@ function handleServicePickerChange() {
     editing.service = id;
     fillServiceForm(service);
   }
-  const selectedId = servicePicker?.value || '';
-  renderSelectedEntityLog('services', selectedId, servicesLogDetail, servicesLogDetailLabel);
 }
 
 function handleFunctionPickerChange() {
@@ -5013,8 +4994,6 @@ function handleFunctionPickerChange() {
     editing.function = id;
     fillFunctionForm(func);
   }
-  const selectedId = functionPicker?.value || '';
-  renderSelectedEntityLog('functions', selectedId, functionsLogDetail, functionsLogDetailLabel);
 }
 
 function handleEmploymentPickerChange() {
@@ -5029,8 +5008,6 @@ function handleEmploymentPickerChange() {
     editing.employment = id;
     fillEmploymentForm(entry);
   }
-  const selectedId = employmentPicker?.value || '';
-  renderSelectedEntityLog('employment', selectedId, employmentLogDetail, employmentLogDetailLabel);
 }
 
 function handleTicketSubmit(event) {
