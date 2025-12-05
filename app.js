@@ -125,6 +125,10 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     doubleNights: false,
     rosterPermission: 'write',
     ticketPermission: 'edit',
+    admin: false,
+    vacationApproval: false,
+    rosterApproval: false,
+    areas: AREAS,
     status: 'active',
   },
   {
@@ -150,6 +154,10 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     doubleNights: false,
     rosterPermission: 'write',
     ticketPermission: 'edit',
+    admin: false,
+    vacationApproval: false,
+    rosterApproval: false,
+    areas: AREAS,
     status: 'active',
   },
   {
@@ -175,6 +183,10 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     doubleNights: false,
     rosterPermission: 'write',
     ticketPermission: 'edit',
+    admin: false,
+    vacationApproval: false,
+    rosterApproval: false,
+    areas: AREAS,
     status: 'active',
   },
   {
@@ -200,6 +212,10 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     doubleNights: false,
     rosterPermission: 'write',
     ticketPermission: 'edit',
+    admin: false,
+    vacationApproval: false,
+    rosterApproval: false,
+    areas: AREAS,
     status: 'active',
   },
 ];
@@ -416,7 +432,7 @@ function forceDefaultLogin() {
   if (ticketReporterInput) ticketReporterInput.value = currentUser.name || 'Alois Reichsöllner';
   if (ticketReporterEmailInput && currentUser.employeeEmail) ticketReporterEmailInput.value = currentUser.employeeEmail;
   applyPermissions();
-  showScreen('roster');
+  showScreen('overview');
   if (appShell) appShell.hidden = false;
   return true;
 }
@@ -433,6 +449,7 @@ function loadState() {
       areas,
       admin: !!emp.admin,
       vacationApproval: !!emp.vacationApproval,
+      rosterApproval: !!emp.rosterApproval,
       rosterPermission: emp.rosterPermission || 'write',
       ticketPermission: emp.ticketPermission || 'edit',
     };
@@ -475,6 +492,7 @@ function loadState() {
     lastName: 'Reichsöllner',
     admin: true,
     vacationApproval: true,
+    rosterApproval: true,
     ticketPermission: 'edit',
     rosterPermission: 'write',
     areas: AREAS,
@@ -1380,7 +1398,7 @@ function isVacationApproved(entry) {
 function findVacationOnDate(emp, date) {
   if (!emp.vacations?.length) return null;
   return emp.vacations.find((entry) => {
-    if (!isVacationApproved(entry)) return false;
+    if (entry.status === 'rejected') return false;
     const start = parseISODate(entry.start);
     const end = parseISODate(entry.end);
     if (!start || !end) return false;
@@ -1712,20 +1730,20 @@ function updateDropdowns() {
         return `<option value="${f.id}"${disabled}>${label}</option>`;
       })
       .join('');
-  const selfReadOnly = currentUser && !currentUser.permissions?.admin && currentUser.permissions?.roster === 'read';
+  const restrictToSelf = currentUser && !currentUser.permissions?.admin;
   const selfEmp = getCurrentEmployee();
   let employeeOptions = state.employees.filter((e) => e.status !== 'exited');
-  if (selfReadOnly) {
+  if (restrictToSelf) {
     employeeOptions = selfEmp ? [selfEmp] : [];
   }
   const employeeOptionsMarkup = employeeOptions
     .map((e) => `<option value="${e.id}">${e.lastName}, ${e.firstName}</option>`)
     .join('');
-  employeePicker.innerHTML = selfReadOnly
+  employeePicker.innerHTML = restrictToSelf
     ? employeeOptionsMarkup || '<option value="">Kein Zugriff</option>'
     : ['<option value="">Neu anlegen</option>', employeeOptionsMarkup].join('');
-  employeePicker.disabled = selfReadOnly && !!selfEmp;
-  if (selfReadOnly && selfEmp) {
+  employeePicker.disabled = restrictToSelf && !!selfEmp;
+  if (restrictToSelf && selfEmp) {
     employeePicker.value = selfEmp.id;
     if (!editing.employee) editing.employee = selfEmp.id;
   }
@@ -1755,9 +1773,9 @@ function renderEmployees() {
   updateDropdowns();
   if (!employeeList) return;
   if (changed) saveState();
-  const selfReadOnly = currentUser && !currentUser.permissions?.admin && currentUser.permissions?.roster === 'read';
+  const restrictToSelf = currentUser && !currentUser.permissions?.admin;
   const selfEmp = getCurrentEmployee();
-  const employees = selfReadOnly ? (selfEmp ? [selfEmp] : []) : state.employees;
+  const employees = restrictToSelf ? (selfEmp ? [selfEmp] : []) : state.employees;
   if (!employees.length) {
     employeeList.innerHTML = '<p class="muted">Noch keine Mitarbeiter angelegt.</p>';
     renderOpenSickList();
@@ -1826,33 +1844,43 @@ function renderDetailsSection(label, data) {
   return `<details><summary>${label} (${count})</summary>${data.body}</details>`;
 }
 
-function upcomingAssignments(emp, limit = 3) {
-  const monthKey = getMonthKey(currentMonth);
-  const days = daysInMonth(currentMonth);
-  const startDate = new Date();
-  startDate.setHours(0, 0, 0, 0);
-  const startDay =
-    currentMonth.getFullYear() === startDate.getFullYear() && currentMonth.getMonth() === startDate.getMonth()
-      ? startDate.getDate()
-      : 1;
-  const assignments = state.assignments[monthKey]?.[emp.id] || {};
+function upcomingAssignments(emp, limit = 50) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const monthKeys = Array.from(
+    new Set([getMonthKey(currentMonth), ...Object.keys(state.assignments || {})])
+  )
+    .map((key) => ({ key, date: monthKeyToDate(key) }))
+    .filter((entry) => entry.date)
+    .sort((a, b) => a.date - b.date);
+
   const results = [];
-  for (let d = startDay; d <= days; d++) {
-    const sid = assignments[d];
-    if (!sid) continue;
-    const service = state.services.find((s) => s.id === sid);
-    if (!service) continue;
-    results.push({ day: d, service });
+  for (const { key, date } of monthKeys) {
     if (results.length >= limit) break;
+    if (date < new Date(today.getFullYear(), today.getMonth(), 1)) continue;
+    const assignments = state.assignments[key]?.[emp.id] || {};
+    const days = daysInMonth(date);
+    const startDay =
+      date.getFullYear() === today.getFullYear() && date.getMonth() === today.getMonth()
+        ? today.getDate()
+        : 1;
+    for (let d = startDay; d <= days && results.length < limit; d++) {
+      const sid = assignments[d];
+      if (!sid) continue;
+      const service = state.services.find((s) => s.id === sid);
+      if (!service) continue;
+      const entryDate = new Date(date.getFullYear(), date.getMonth(), d);
+      if (entryDate < today) continue;
+      results.push({ day: d, service, date: formatISODate(entryDate) });
+    }
   }
   return results;
 }
 
-function upcomingApprovedVacations(emp, limit = 3) {
+function upcomingVacations(emp, limit = 50) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   return (emp.vacations || [])
-    .filter((v) => isVacationApproved(v))
     .filter((v) => {
       const start = parseISODate(v.start);
       return start && start >= today;
@@ -2624,9 +2652,9 @@ function renderVacationLimitList() {
 
 function renderOpenSickList() {
   if (!openSickList) return;
-  const selfReadOnly = currentUser && !currentUser.permissions?.admin && currentUser.permissions?.roster === 'read';
+  const restrictToSelf = currentUser && !currentUser.permissions?.admin;
   const selfEmp = getCurrentEmployee();
-  const employees = selfReadOnly ? (selfEmp ? [selfEmp] : []) : state.employees;
+  const employees = restrictToSelf ? (selfEmp ? [selfEmp] : []) : state.employees;
   const entries = [];
   employees.forEach((emp) => {
     (emp.sickLeaves || []).forEach((entry) => {
@@ -2812,11 +2840,8 @@ function renderOverview() {
   if (!overviewServices || !currentUser) return;
   const admin = !!currentUser.permissions?.admin;
   const approver = admin || !!currentUser.permissions?.vacationApproval;
-  const employees = admin
-    ? state.employees.filter((e) => e.status !== 'exited')
-    : getCurrentEmployee()
-    ? [getCurrentEmployee()]
-    : [];
+  const selfEmp = getCurrentEmployee();
+  const employees = selfEmp ? [selfEmp] : [];
   const allowedAreas = admin ? null : currentUser.areas || [];
   const visibleTickets = allowedAreas
     ? (state.tickets || []).filter((t) => !t.area || allowedAreas.includes(t.area))
@@ -2855,13 +2880,10 @@ function renderOverview() {
 
   const serviceCards = employees
     .map((emp) => {
-      const entries = upcomingAssignments(emp);
+      const entries = upcomingAssignments(emp, 50);
       const label = entries.length
         ? entries
-            .map(({ day, service }) => {
-              const date = formatISODate(new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day));
-              return `${formatShortDate(date)}: ${escapeHtml(service.name)}`;
-            })
+            .map(({ date, service }) => `${formatShortDate(date)}: ${escapeHtml(service.name)}`)
             .join('<br>')
         : '<span class="muted">Keine Dienste geplant</span>';
       return `<article class="item"><div class="item__header"><strong>${escapeHtml(formatName(emp))}</strong></div><p>${label}</p></article>`;
@@ -2871,10 +2893,20 @@ function renderOverview() {
 
   const vacationCards = employees
     .map((emp) => {
-      const entries = upcomingApprovedVacations(emp);
+      const entries = upcomingVacations(emp, 50);
       const label = entries.length
         ? entries
-            .map((vac) => `${formatVacationRange(vac)} · ${escapeHtml((VACATION_TYPES[vac.type] || VACATION_TYPES.vacation).name)}`)
+            .map((vac) => {
+              const meta = VACATION_TYPES[vac.type] || VACATION_TYPES.vacation;
+              const status = vac.status || 'approved';
+              const statusLabel =
+                status === 'pending'
+                  ? '<span class="pill pending">nicht freigegeben</span>'
+                  : status === 'rejected'
+                  ? '<span class="pill danger">abgelehnt</span>'
+                  : '<span class="pill success">freigegeben</span>';
+              return `${formatVacationRange(vac)} · ${escapeHtml(meta.name)} ${statusLabel}`;
+            })
             .join('<br>')
         : '<span class="muted">Keine Urlaube geplant</span>';
       return `<article class="item"><div class="item__header"><strong>${escapeHtml(formatName(emp))}</strong></div><p>${label}</p></article>`;
@@ -2972,6 +3004,7 @@ function fillEmployeeForm(emp) {
   form.holidayFactor.value = emp.holidayFactor ?? 0;
   form.dailyWorkHours.value = emp.dailyWorkHours ?? 0;
   form.vacationApproval.checked = !!emp.vacationApproval;
+  form.rosterApproval.checked = !!emp.rosterApproval;
   form.hireDate.value = emp.hireDate || '';
   form.endDate.value = emp.endDate || '';
   form.nightAllowed.checked = !!emp.nightAllowed;
@@ -3068,6 +3101,9 @@ function handleEmployeeForm(e) {
     vacationApproval: data.has('vacationApproval')
       ? data.get('vacationApproval') === 'on'
       : !!existing?.vacationApproval,
+    rosterApproval: data.has('rosterApproval')
+      ? data.get('rosterApproval') === 'on'
+      : !!existing?.rosterApproval,
     hireDate: data.get('hireDate') || '',
     endDate: data.get('endDate') || '',
     nightAllowed: data.get('nightAllowed') === 'on',
@@ -3117,9 +3153,9 @@ function handleEmployeeForm(e) {
 
 function handleEmployeeFormReset() {
   editing.employee = null;
-  const selfReadOnly = currentUser && !currentUser.permissions?.admin && currentUser.permissions?.roster === 'read';
+  const restrictToSelf = currentUser && !currentUser.permissions?.admin;
   const selfEmp = getCurrentEmployee();
-  employeePicker.value = selfReadOnly && selfEmp ? selfEmp.id : '';
+  employeePicker.value = restrictToSelf && selfEmp ? selfEmp.id : '';
   renderVacationPanel(null);
   renderSickPanel(null);
   if (employeeExitBtn) employeeExitBtn.disabled = true;
@@ -3458,6 +3494,7 @@ function buildUserSession(userId, entry) {
     basePermissions.tickets = emp.ticketPermission === 'edit' ? 'edit' : 'create';
     if (emp.admin) basePermissions.admin = true;
     if (emp.vacationApproval) basePermissions.vacationApproval = true;
+    if (emp.rosterApproval) basePermissions.rosterApproval = true;
   }
   return {
     id: userId,
@@ -3511,7 +3548,7 @@ function applyPermissions() {
   const activeBtn = document.querySelector('.main-menu button.active');
   const activeTarget = activeBtn?.dataset.target;
   if (!admin && activeTarget && !allowedScreens.has(activeTarget)) {
-    showScreen('roster');
+    showScreen('overview');
   }
   if (ticketForm) {
     ticketForm.querySelectorAll('input, select, textarea, button').forEach((el) => {
@@ -3546,7 +3583,7 @@ function handleLogin(event) {
   }
   currentUser = buildUserSession(userId, entry);
   applyPermissions();
-  showScreen('roster');
+  showScreen('overview');
   showNotification('Login erfolgreich', 'success');
 }
 
@@ -3904,6 +3941,9 @@ function buildEmployeeRow(emp, monthKey, days, markAssignmentsDirty) {
       parts.push(
         `<span class="absence-pill ${showVacation ? 'vacation' : 'sick'}" title="${title}">${label}</span>`
       );
+      if (showVacation && vacationEntry.status === 'pending') {
+        parts.push('<span class="vacation-status pending">Nicht freigegeben</span>');
+      }
       if (clearedService) {
         parts.push(`<span class="cleared-service">${renderServiceChip(clearedService, { strike: true })}</span>`);
       }

@@ -41,7 +41,7 @@
         </summary>
         <div class="menu-accordion__body">
           <div class="menu-group__items">
-            <button type="button" data-target="overview">Übersicht</button>
+            <button type="button" data-target="overview" class="active">Übersicht</button>
           </div>
         </div>
       </details>
@@ -52,7 +52,7 @@
         </summary>
         <div class="menu-accordion__body">
           <div class="menu-group__items">
-            <button type="button" data-target="roster" class="active">Dienstplan</button>
+            <button type="button" data-target="roster">Dienstplan</button>
             <button type="button" data-target="employees" id="menuEmployeesBtn">Mitarbeiter<span class="alert-indicator" id="menuEmployeeAlert" aria-hidden="true" hidden></span></button>
             <button type="button" data-target="services">Dienste</button>
             <button type="button" data-target="functions">Funktionen</button>
@@ -204,6 +204,26 @@
               <label>Eintrittsdatum<input type="date" name="hireDate"></label>
               <label>Austrittsdatum<input type="date" name="endDate"></label>
             </div>
+            <fieldset class="grouped" id="adminSettings">
+              <legend>Admin Einstellungen</legend>
+              <label>Bereiche
+                <select name="areas" id="employeeAreas" multiple size="3"></select>
+              </label>
+              <div class="permission-grid">
+                <fieldset class="radio-row">
+                  <legend>Dienstplan-Rechte</legend>
+                  <label class="radio"><input type="radio" name="rosterPermission" value="write"> Dienstplan schreiben</label>
+                  <label class="radio"><input type="radio" name="rosterPermission" value="read"> Dienstplan lesen</label>
+                  <label class="checkbox"><input type="checkbox" name="rosterApproval"> Freigabe Dienstplan</label>
+                </fieldset>
+                <fieldset class="radio-row">
+                  <legend>Ticket-Rechte</legend>
+                  <label class="radio"><input type="radio" name="ticketPermission" value="write"> Tickets schreiben</label>
+                  <label class="radio"><input type="radio" name="ticketPermission" value="edit"> Tickets bearbeiten</label>
+                </fieldset>
+              </div>
+              <label class="checkbox"><input type="checkbox" name="admin"> Admin</label>
+            </fieldset>
             <fieldset class="grouped" id="planningSettings">
               <legend>Dienstplaneinstellungen</legend>
               <div class="inline-fieldset">
@@ -221,45 +241,26 @@
                 <label>Durchrechnungsfaktor<input type="text" name="holidayFactor" inputmode="decimal" value="0"></label>
                 <label>Tägliche Sollarbeitszeit<input type="text" name="dailyWorkHours" inputmode="decimal" value="0"></label>
               </div>
+              <label>Urlaubstage pro Jahr<input type="number" name="vacationDays" min="0" step="1" required></label>
+              <div class="stacked-checkboxes">
+                <label class="checkbox">
+                  <input type="checkbox" name="nightAllowed"> Nachtdienste
+                </label>
+                <label class="checkbox">
+                  <input type="checkbox" name="doubleNights"> Doppelnächte
+                </label>
+                <label class="checkbox">
+                  <input type="checkbox" name="rkt"> RKT
+                </label>
+              </div>
               <label class="checkbox">
                 <input type="checkbox" name="vacationApproval"> Freigabe Urlaube
               </label>
             </fieldset>
-            <label>Urlaubstage pro Jahr<input type="number" name="vacationDays" min="0" step="1" required></label>
-            <div class="stacked-checkboxes">
-              <label class="checkbox">
-                <input type="checkbox" name="nightAllowed"> Nachtdienste
-              </label>
-              <label class="checkbox">
-                <input type="checkbox" name="doubleNights"> Doppelnächte
-              </label>
-              <label class="checkbox">
-                <input type="checkbox" name="rkt"> RKT
-              </label>
-            </div>
-            <fieldset class="grouped" id="adminSettings">
-              <legend>Admin Einstellungen</legend>
-              <label>Bereiche
-                <select name="areas" id="employeeAreas" multiple size="3"></select>
-              </label>
-              <div class="permission-grid">
-                <fieldset class="radio-row">
-                  <legend>Dienstplan-Rechte</legend>
-                  <label class="radio"><input type="radio" name="rosterPermission" value="write"> Dienstplan schreiben</label>
-                  <label class="radio"><input type="radio" name="rosterPermission" value="read"> Dienstplan lesen</label>
-                </fieldset>
-                <fieldset class="radio-row">
-                  <legend>Ticket-Rechte</legend>
-                  <label class="radio"><input type="radio" name="ticketPermission" value="write"> Tickets schreiben</label>
-                  <label class="radio"><input type="radio" name="ticketPermission" value="edit"> Tickets bearbeiten</label>
-                </fieldset>
-              </div>
-              <label class="checkbox"><input type="checkbox" name="admin"> Admin</label>
-            </fieldset>
             <div class="form-actions">
               <button type="submit" class="primary">Speichern</button>
-              <button type="button" id="employeeExitBtn" class="ghost danger">Ausscheiden</button>
-              <button type="reset" class="ghost">Felder leeren</button>
+              <button type="button" class="ghost" id="employeeExitBtn">Ausscheiden</button>
+              <button type="reset" class="ghost">Zurücksetzen</button>
             </div>
           </form>
           <div class="vacation-panel" id="vacationPanel" hidden>
