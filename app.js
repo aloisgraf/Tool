@@ -361,6 +361,15 @@ const ticketReporterEmailInput = document.getElementById('ticketReporterEmail');
 const ticketAreaInput = document.getElementById('ticketArea');
 const ticketStatusFilter = document.getElementById('ticketStatusFilter');
 const ticketList = document.getElementById('ticketList');
+const planningSettings = document.getElementById('planningSettings');
+const adminSettings = document.getElementById('adminSettings');
+const overviewApprovals = document.getElementById('overviewApprovals');
+const overviewApprovalsBlock = document.getElementById('overviewApprovalsBlock');
+const overviewServices = document.getElementById('overviewServices');
+const overviewVacations = document.getElementById('overviewVacations');
+const overviewMyTickets = document.getElementById('overviewMyTickets');
+const overviewAssigned = document.getElementById('overviewAssigned');
+const overviewAssignedBlock = document.getElementById('overviewAssignedBlock');
 const missionServiceUrlInput = document.getElementById('missionServiceUrl');
 const missionSaveBtn = document.getElementById('missionSave');
 const missionRefreshBtn = document.getElementById('missionRefresh');
@@ -423,6 +432,7 @@ function loadState() {
       ...emp,
       areas,
       admin: !!emp.admin,
+      vacationApproval: !!emp.vacationApproval,
       rosterPermission: emp.rosterPermission || 'write',
       ticketPermission: emp.ticketPermission || 'edit',
     };
@@ -464,6 +474,7 @@ function loadState() {
     firstName: 'Alois',
     lastName: 'Reichsöllner',
     admin: true,
+    vacationApproval: true,
     ticketPermission: 'edit',
     rosterPermission: 'write',
     areas: AREAS,
@@ -600,6 +611,7 @@ function normalizeEmployees(employees = [], groups = []) {
       status,
       rosterPermission,
       ticketPermission,
+      vacationApproval: !!emp.vacationApproval,
     };
     return normalized;
   });
@@ -823,12 +835,19 @@ function normalizeVacationEntries(entries = []) {
       const end = parseISODate(entry?.end);
       if (!start || !end) return null;
       const ordered = start <= end ? { start, end } : { start: end, end: start };
+      const status = ['pending', 'rejected', 'approved'].includes(entry?.status) ? entry.status : 'approved';
       return {
         id: entry.id || uuid(),
         start: formatISODate(ordered.start),
         end: formatISODate(ordered.end),
         type: VACATION_TYPES[entry?.type] ? entry.type : 'vacation',
         reason: typeof entry?.reason === 'string' ? entry.reason : '',
+        status,
+        requestedBy: entry?.requestedBy || '',
+        requestedAt: entry?.requestedAt || '',
+        decisionBy: entry?.decisionBy || '',
+        decisionAt: entry?.decisionAt || '',
+        decisionReason: typeof entry?.decisionReason === 'string' ? entry.decisionReason : '',
       };
     })
     .filter(Boolean)
@@ -1258,12 +1277,14 @@ function vacationBreakdown(startStr, endStr) {
 
 function vacationUsageByYear(emp) {
   const usage = {};
-  (emp.vacations || []).forEach((entry) => {
-    const breakdown = vacationBreakdown(entry.start, entry.end);
-    Object.entries(breakdown).forEach(([year, days]) => {
-      usage[year] = (usage[year] || 0) + days;
+  (emp.vacations || [])
+    .filter((entry) => isVacationApproved(entry))
+    .forEach((entry) => {
+      const breakdown = vacationBreakdown(entry.start, entry.end);
+      Object.entries(breakdown).forEach(([year, days]) => {
+        usage[year] = (usage[year] || 0) + days;
+      });
     });
-  });
   return usage;
 }
 
@@ -1352,9 +1373,14 @@ function formatShortDate(value) {
   return date.toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
+function isVacationApproved(entry) {
+  return !entry?.status || entry.status === 'approved';
+}
+
 function findVacationOnDate(emp, date) {
   if (!emp.vacations?.length) return null;
   return emp.vacations.find((entry) => {
+    if (!isVacationApproved(entry)) return false;
     const start = parseISODate(entry.start);
     const end = parseISODate(entry.end);
     if (!start || !end) return false;
@@ -1800,6 +1826,41 @@ function renderDetailsSection(label, data) {
   return `<details><summary>${label} (${count})</summary>${data.body}</details>`;
 }
 
+function upcomingAssignments(emp, limit = 3) {
+  const monthKey = getMonthKey(currentMonth);
+  const days = daysInMonth(currentMonth);
+  const startDate = new Date();
+  startDate.setHours(0, 0, 0, 0);
+  const startDay =
+    currentMonth.getFullYear() === startDate.getFullYear() && currentMonth.getMonth() === startDate.getMonth()
+      ? startDate.getDate()
+      : 1;
+  const assignments = state.assignments[monthKey]?.[emp.id] || {};
+  const results = [];
+  for (let d = startDay; d <= days; d++) {
+    const sid = assignments[d];
+    if (!sid) continue;
+    const service = state.services.find((s) => s.id === sid);
+    if (!service) continue;
+    results.push({ day: d, service });
+    if (results.length >= limit) break;
+  }
+  return results;
+}
+
+function upcomingApprovedVacations(emp, limit = 3) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return (emp.vacations || [])
+    .filter((v) => isVacationApproved(v))
+    .filter((v) => {
+      const start = parseISODate(v.start);
+      return start && start >= today;
+    })
+    .sort((a, b) => a.start.localeCompare(b.start))
+    .slice(0, limit);
+}
+
 function buildVacationOverview(emp) {
   if (!emp.vacations?.length) {
     return { count: 0, body: '<p class="log-inline">Noch keine Einträge</p>' };
@@ -1811,7 +1872,13 @@ function buildVacationOverview(emp) {
       const days = calculateVacationDays(entry.start, entry.end);
       const meta = VACATION_TYPES[entry.type] || VACATION_TYPES.vacation;
       const reason = entry.reason ? ` · Grund: ${escapeHtml(entry.reason)}` : '';
-      return `<li><strong>${formatVacationRange(entry)}</strong><small>${days} Tag${days === 1 ? '' : 'e'} · ${meta.name}${reason}</small></li>`;
+      const status =
+        entry.status === 'pending'
+          ? ' · wartet auf Freigabe'
+          : entry.status === 'rejected'
+          ? ' · abgelehnt'
+          : '';
+      return `<li><strong>${formatVacationRange(entry)}</strong><small>${days} Tag${days === 1 ? '' : 'e'} · ${meta.name}${status}${reason}</small></li>`;
     })
     .join('');
   return { count: emp.vacations.length, body: `<ul>${items}</ul>` };
@@ -1883,13 +1950,27 @@ function renderVacationPanel(emp) {
       const days = calculateVacationDays(entry.start, entry.end);
       const meta = VACATION_TYPES[entry.type] || VACATION_TYPES.vacation;
       const reason = entry.reason ? `<span class="muted">Grund: ${escapeHtml(entry.reason)}</span>` : '';
+      const statusLabel =
+        entry.status === 'pending'
+          ? '<span class="status-pill warning">Wartet auf Freigabe</span>'
+          : entry.status === 'rejected'
+          ? '<span class="status-pill danger">Abgelehnt</span>'
+          : '<span class="status-pill success">Freigegeben</span>';
+      const approverInfo = entry.decisionBy
+        ? `<span class="muted">${escapeHtml(entry.decisionBy)} · ${formatShortDate(entry.decisionAt)}</span>`
+        : '';
+      const declineReason = entry.status === 'rejected' && entry.decisionReason
+        ? `<span class="muted">Begründung: ${escapeHtml(entry.decisionReason)}</span>`
+        : '';
       return `
         <li>
           <div class="entry-line">
             <div>
               <strong>${formatVacationRange(entry)}</strong>
-              <span class="muted">${days} Tag${days === 1 ? '' : 'e'} · ${meta.name}</span>
+              <span class="muted">${days} Tag${days === 1 ? '' : 'e'} · ${meta.name}</span> ${statusLabel}
               ${reason}
+              ${approverInfo}
+              ${declineReason}
             </div>
             <div class="entry-actions">
               <button type="button" class="ghost" data-remove-vacation="${entry.id}">Entfernen</button>
@@ -1995,15 +2076,33 @@ function handleAddVacation() {
     alert(`Für ${label} ist die maximale Anzahl an Urlauber*innen bereits erreicht.`);
     return;
   }
-  const entry = { id: uuid(), start: ordered.start, end: ordered.end, type, reason: reasonValue };
+  const now = new Date().toISOString();
+  const isSelf = currentUser && emp.personnelNumber === currentUser.id;
+  const canApprove = !!currentUser?.permissions?.admin || !!currentUser?.permissions?.vacationApproval;
+  const requiresApproval = isSelf && !canApprove;
+  const entry = {
+    id: uuid(),
+    start: ordered.start,
+    end: ordered.end,
+    type,
+    reason: reasonValue,
+    status: requiresApproval ? 'pending' : 'approved',
+    requestedBy: currentUser?.name || '',
+    requestedAt: now,
+    decisionBy: requiresApproval ? '' : currentUser?.name || '',
+    decisionAt: requiresApproval ? '' : now,
+    decisionReason: '',
+  };
   emp.vacations.push(entry);
-  if (meta.clearsAssignments) {
+  if (!requiresApproval && meta.clearsAssignments) {
     clearAssignmentsForRange(emp.id, entry.start, entry.end, { trackEntry: entry });
   }
-  appendLog('employees', `${meta.name} ${formatVacationRange(entry)} für ${formatName(emp)} gespeichert.`, emp.id);
+  const suffix = requiresApproval ? ' (wartet auf Freigabe)' : '';
+  appendLog('employees', `${meta.name} ${formatVacationRange(entry)} für ${formatName(emp)} gespeichert${suffix}.`, emp.id);
   saveState();
   renderVacationPanel(emp);
   renderEmployees();
+  renderOverview();
   renderRoster();
   vacationStartInput.value = '';
   vacationEndInput.value = '';
@@ -2026,7 +2125,63 @@ function handleVacationListClick(event) {
   saveState();
   renderVacationPanel(emp);
   renderEmployees();
+  renderOverview();
   renderRoster();
+}
+
+function pendingVacationRequests() {
+  const entries = [];
+  state.employees.forEach((emp) => {
+    (emp.vacations || []).forEach((vac) => {
+      if (vac.status === 'pending') entries.push({ emp, vacation: vac });
+    });
+  });
+  return entries.sort((a, b) => a.vacation.start.localeCompare(b.vacation.start));
+}
+
+function decideVacation(empId, vacationId, approved, reason = '') {
+  if (!currentUser || (!currentUser.permissions?.admin && !currentUser.permissions?.vacationApproval)) {
+    showNotification('Keine Berechtigung für Urlaubsfreigaben', 'error');
+    return;
+  }
+  const emp = state.employees.find((e) => e.id === empId);
+  if (!emp) return;
+  const entry = emp.vacations.find((v) => v.id === vacationId);
+  if (!entry) return;
+  entry.status = approved ? 'approved' : 'rejected';
+  entry.decisionBy = currentUser?.name || 'Admin';
+  entry.decisionAt = new Date().toISOString();
+  entry.decisionReason = approved ? '' : reason;
+  const meta = VACATION_TYPES[entry.type] || VACATION_TYPES.vacation;
+  if (approved && meta.clearsAssignments) {
+    clearAssignmentsForRange(emp.id, entry.start, entry.end, { trackEntry: entry });
+  }
+  appendLog(
+    'employees',
+    `${meta.name} ${formatVacationRange(entry)} für ${formatName(emp)} ${approved ? 'freigegeben' : 'abgelehnt'}.`,
+    emp.id
+  );
+  saveState();
+  renderVacationPanel(emp);
+  renderEmployees();
+  renderOverview();
+  renderRoster();
+  showNotification(approved ? 'Urlaub freigegeben' : 'Urlaub abgelehnt', approved ? 'success' : 'error');
+}
+
+function handleOverviewClick(event) {
+  const approveBtn = event.target.closest('[data-approve-vacation]');
+  const rejectBtn = event.target.closest('[data-reject-vacation]');
+  if (!approveBtn && !rejectBtn) return;
+  const empId = (approveBtn || rejectBtn).dataset.emp;
+  const vacationId = approveBtn ? approveBtn.dataset.approveVacation : rejectBtn.dataset.rejectVacation;
+  if (!empId || !vacationId) return;
+  if (rejectBtn) {
+    const reason = prompt('Begründung für die Ablehnung (optional):', '') || '';
+    decideVacation(empId, vacationId, false, reason);
+  } else {
+    decideVacation(empId, vacationId, true, '');
+  }
 }
 
 function handleAddSick() {
@@ -2643,6 +2798,7 @@ function renderTickets() {
           .join('')}</div></details>`
     : '';
   ticketList.innerHTML = openSections + closedSection;
+  renderOverview();
 }
 
 function updateTicketActionLabel(card) {
@@ -2650,6 +2806,113 @@ function updateTicketActionLabel(card) {
   const button = card.querySelector('button[data-ticket-submit]');
   const notify = card.querySelector('input[data-ticket-notify]');
   if (button) button.textContent = notify?.checked ? 'Speichern und Senden' : 'Speichern';
+}
+
+function renderOverview() {
+  if (!overviewServices || !currentUser) return;
+  const admin = !!currentUser.permissions?.admin;
+  const approver = admin || !!currentUser.permissions?.vacationApproval;
+  const employees = admin
+    ? state.employees.filter((e) => e.status !== 'exited')
+    : getCurrentEmployee()
+    ? [getCurrentEmployee()]
+    : [];
+  const allowedAreas = admin ? null : currentUser.areas || [];
+  const visibleTickets = allowedAreas
+    ? (state.tickets || []).filter((t) => !t.area || allowedAreas.includes(t.area))
+    : state.tickets || [];
+
+  if (overviewApprovalsBlock) {
+    if (!approver) {
+      overviewApprovalsBlock.hidden = true;
+    } else {
+      const pending = pendingVacationRequests().filter((entry) => entry.emp.status !== 'exited');
+      overviewApprovalsBlock.hidden = false;
+      if (overviewApprovals) {
+        overviewApprovals.innerHTML = pending.length
+          ? pending
+              .map(({ emp, vacation }) => {
+                const meta = VACATION_TYPES[vacation.type] || VACATION_TYPES.vacation;
+                const reason = vacation.reason ? `<p class="muted">Grund: ${escapeHtml(vacation.reason)}</p>` : '';
+                return `
+                  <article class="item">
+                    <div class="item__header">
+                      <strong>${escapeHtml(formatName(emp))}</strong>
+                      <small>${escapeHtml(meta.name)} · ${formatVacationRange(vacation)}</small>
+                    </div>
+                    ${reason}
+                    <div class="item__actions">
+                      <button type="button" class="ghost" data-approve-vacation="${vacation.id}" data-emp="${emp.id}">Freigeben</button>
+                      <button type="button" class="ghost danger" data-reject-vacation="${vacation.id}" data-emp="${emp.id}">Ablehnen</button>
+                    </div>
+                  </article>`;
+              })
+              .join('')
+          : '<p class="muted">Keine offenen Urlaubsanträge.</p>';
+      }
+    }
+  }
+
+  const serviceCards = employees
+    .map((emp) => {
+      const entries = upcomingAssignments(emp);
+      const label = entries.length
+        ? entries
+            .map(({ day, service }) => {
+              const date = formatISODate(new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day));
+              return `${formatShortDate(date)}: ${escapeHtml(service.name)}`;
+            })
+            .join('<br>')
+        : '<span class="muted">Keine Dienste geplant</span>';
+      return `<article class="item"><div class="item__header"><strong>${escapeHtml(formatName(emp))}</strong></div><p>${label}</p></article>`;
+    })
+    .join('');
+  overviewServices.innerHTML = serviceCards || '<p class="muted">Keine Mitarbeiter sichtbar.</p>';
+
+  const vacationCards = employees
+    .map((emp) => {
+      const entries = upcomingApprovedVacations(emp);
+      const label = entries.length
+        ? entries
+            .map((vac) => `${formatVacationRange(vac)} · ${escapeHtml((VACATION_TYPES[vac.type] || VACATION_TYPES.vacation).name)}`)
+            .join('<br>')
+        : '<span class="muted">Keine Urlaube geplant</span>';
+      return `<article class="item"><div class="item__header"><strong>${escapeHtml(formatName(emp))}</strong></div><p>${label}</p></article>`;
+    })
+    .join('');
+  overviewVacations.innerHTML = vacationCards || '<p class="muted">Keine Mitarbeiter sichtbar.</p>';
+
+  const myName = currentUser.name || '';
+  const myTickets = visibleTickets.filter((t) => (t.reporterName || '').toLowerCase() === myName.toLowerCase());
+  overviewMyTickets.innerHTML = myTickets.length
+    ? myTickets
+        .map((ticket) => {
+          const latest = (ticket.updates || [])[0];
+          const latestText = latest ? `${latest.status}: ${escapeHtml(latest.note || '')}` : 'Keine Updates';
+          const updateCount = ticket.updates?.length || 0;
+          return `<article class="item"><div class="item__header"><strong>${escapeHtml(ticket.ticketNumber || ticket.name)}</strong><small>${escapeHtml(ticket.name)}</small><small>${updateCount} Update${
+            updateCount === 1 ? '' : 's'
+          }</small></div><p>${latestText}</p></article>`;
+        })
+        .join('')
+    : '<p class="muted">Keine eigenen Tickets vorhanden.</p>';
+
+  if (overviewAssignedBlock) overviewAssignedBlock.hidden = !canManageTickets();
+  if (overviewAssigned && !overviewAssignedBlock?.hidden) {
+    const assigned = visibleTickets.filter((t) => t.assignee && t.assignee === myName);
+    overviewAssigned.innerHTML = assigned.length
+      ? assigned
+          .map((ticket) => {
+            const latest = (ticket.updates || [])[0];
+            const latestText = latest ? `${latest.status}: ${escapeHtml(latest.note || '')}` : 'Keine Updates';
+            const updateCount = ticket.updates?.length || 0;
+            return `<article class="item"><div class="item__header"><strong>${escapeHtml(ticket.ticketNumber || ticket.name)}</strong><small>${escapeHtml(ticket.status)}</small><small>${updateCount} Update${
+              updateCount === 1 ? '' : 's'
+            }</small></div><p>${latestText}</p></article>`;
+          })
+          .join('')
+      : '<p class="muted">Keine übernommenen Tickets.</p>';
+  }
 }
 
 function handleTicketCardChange(event) {
@@ -2682,6 +2945,19 @@ function getMultiSelectValues(select) {
   return Array.from(select.selectedOptions).map((opt) => opt.value);
 }
 
+function setGroupDisabled(group, disabled) {
+  if (!group) return;
+  group.querySelectorAll('input, select, textarea, button').forEach((el) => {
+    el.disabled = disabled;
+  });
+}
+
+function enforceEmployeeFieldPermissions(emp) {
+  const isAdmin = !!currentUser?.permissions?.admin;
+  setGroupDisabled(planningSettings, !isAdmin);
+  setGroupDisabled(adminSettings, !isAdmin);
+}
+
 function fillEmployeeForm(emp) {
   const form = employeeForm.elements;
   form.firstName.value = emp.firstName || '';
@@ -2695,6 +2971,7 @@ function fillEmployeeForm(emp) {
   form.vacationDays.value = emp.vacationDays ?? 0;
   form.holidayFactor.value = emp.holidayFactor ?? 0;
   form.dailyWorkHours.value = emp.dailyWorkHours ?? 0;
+  form.vacationApproval.checked = !!emp.vacationApproval;
   form.hireDate.value = emp.hireDate || '';
   form.endDate.value = emp.endDate || '';
   form.nightAllowed.checked = !!emp.nightAllowed;
@@ -2713,6 +2990,7 @@ function fillEmployeeForm(emp) {
     form.admin.checked = !!emp.admin;
   }
   if (employeeExitBtn) employeeExitBtn.disabled = emp.status === 'exited';
+  enforceEmployeeFieldPermissions(emp);
 }
 
 function fillServiceForm(service) {
@@ -2775,21 +3053,34 @@ function handleEmployeeForm(e) {
     personnelNumber,
     birthday: data.get('birthday'),
     email: data.get('email') || '',
-    employmentPercent: data.get('employmentPercent'),
-    employmentHours: data.get('employmentHours'),
-    functionId: data.get('functionId'),
+    employmentPercent: data.get('employmentPercent') || existing?.employmentPercent || '',
+    employmentHours: data.get('employmentHours') || existing?.employmentHours || '',
+    functionId: data.get('functionId') || existing?.functionId || '',
     vacationDays: Number(data.get('vacationDays')) || 0,
-    holidayFactor: parseDecimalInput(data.get('holidayFactor'), existing?.holidayFactor || 0),
-    dailyWorkHours: parseDecimalInput(data.get('dailyWorkHours'), existing?.dailyWorkHours || 0),
+    holidayFactor: parseDecimalInput(
+      data.has('holidayFactor') ? data.get('holidayFactor') : existing?.holidayFactor,
+      existing?.holidayFactor || 0
+    ),
+    dailyWorkHours: parseDecimalInput(
+      data.has('dailyWorkHours') ? data.get('dailyWorkHours') : existing?.dailyWorkHours,
+      existing?.dailyWorkHours || 0
+    ),
+    vacationApproval: data.has('vacationApproval')
+      ? data.get('vacationApproval') === 'on'
+      : !!existing?.vacationApproval,
     hireDate: data.get('hireDate') || '',
     endDate: data.get('endDate') || '',
     nightAllowed: data.get('nightAllowed') === 'on',
     doubleNights: data.get('doubleNights') === 'on',
     rkt: data.get('rkt') === 'on',
-    areas: getMultiSelectValues(employeeAreasSelect),
-    rosterPermission: data.get('rosterPermission') || existing?.rosterPermission || 'write',
-    ticketPermission: data.get('ticketPermission') || existing?.ticketPermission || 'edit',
-    admin: data.get('admin') === 'on',
+    areas: employeeAreasSelect?.disabled ? existing?.areas || [] : getMultiSelectValues(employeeAreasSelect),
+    rosterPermission: data.has('rosterPermission')
+      ? data.get('rosterPermission') || 'write'
+      : existing?.rosterPermission || 'write',
+    ticketPermission: data.has('ticketPermission')
+      ? data.get('ticketPermission') || 'edit'
+      : existing?.ticketPermission || 'edit',
+    admin: data.has('admin') ? data.get('admin') === 'on' : !!existing?.admin,
     status: existing?.status || 'active',
   };
 
@@ -2832,6 +3123,7 @@ function handleEmployeeFormReset() {
   renderVacationPanel(null);
   renderSickPanel(null);
   if (employeeExitBtn) employeeExitBtn.disabled = true;
+  enforceEmployeeFieldPermissions(null);
 }
 
 function handleEmployeeExit() {
@@ -3165,6 +3457,7 @@ function buildUserSession(userId, entry) {
     basePermissions.roster = emp.rosterPermission === 'write' ? 'write' : 'read';
     basePermissions.tickets = emp.ticketPermission === 'edit' ? 'edit' : 'create';
     if (emp.admin) basePermissions.admin = true;
+    if (emp.vacationApproval) basePermissions.vacationApproval = true;
   }
   return {
     id: userId,
@@ -3202,7 +3495,8 @@ function applyPermissions() {
     rosterMode = 'view';
     renderRoster();
   }
-  const allowedScreens = admin ? null : new Set(['roster', 'ticketCreate', 'tickets', 'missions', 'employees']);
+  enforceEmployeeFieldPermissions(editing.employee ? state.employees.find((e) => e.id === editing.employee) : getCurrentEmployee());
+  const allowedScreens = admin ? null : new Set(['roster', 'ticketCreate', 'tickets', 'missions', 'employees', 'overview']);
   menuButtons.forEach((btn) => {
     const allowed = loggedIn && (admin || allowedScreens.has(btn.dataset.target));
     btn.disabled = !allowed;
@@ -3235,6 +3529,7 @@ function applyPermissions() {
   if (printPlanBtn) printPlanBtn.disabled = !loggedIn;
   renderTickets();
   renderRoster();
+  renderOverview();
   syncMissionInputs();
   startMissionPolling();
 }
@@ -3272,7 +3567,7 @@ function showScreen(target) {
     return;
   }
   const admin = !!currentUser?.permissions?.admin;
-  const allowedScreens = admin ? null : new Set(['roster', 'ticketCreate', 'tickets', 'missions', 'employees']);
+  const allowedScreens = admin ? null : new Set(['roster', 'ticketCreate', 'tickets', 'missions', 'employees', 'overview']);
   if (!admin && !allowedScreens.has(target)) {
     showNotification('Keine Berechtigung für diesen Bereich', 'error');
     return;
@@ -3296,6 +3591,8 @@ function showScreen(target) {
     renderRules();
   } else if (target === 'missions') {
     renderMissionBoard();
+  } else if (target === 'overview') {
+    renderOverview();
   }
 }
 
@@ -3433,6 +3730,7 @@ function renderRoster() {
   });
   renderLegend();
   renderVacationMonitor();
+  renderOverview();
   if (editing.employee) {
     const currentEmp = state.employees.find((e) => e.id === editing.employee);
     if (currentEmp) {
@@ -5146,6 +5444,7 @@ function wireEvents() {
   employeeForm.addEventListener('reset', handleEmployeeFormReset);
   if (employeeExitBtn) employeeExitBtn.addEventListener('click', handleEmployeeExit);
   if (employeeList) employeeList.addEventListener('click', handleEmployeeListClick);
+  if (overviewApprovals) overviewApprovals.addEventListener('click', handleOverviewClick);
   serviceForm.addEventListener('submit', handleServiceForm);
   functionForm.addEventListener('submit', handleFunctionForm);
   functionForm.addEventListener('reset', () => {
