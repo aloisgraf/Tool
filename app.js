@@ -52,6 +52,48 @@ function generateTicketNumber() {
 const clone = (value) =>
   typeof structuredClone === 'function' ? structuredClone(value) : JSON.parse(JSON.stringify(value));
 
+const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+function normalizeAssignments(raw) {
+  if (!isPlainObject(raw)) return {};
+  const normalized = {};
+  Object.entries(raw).forEach(([monthKey, employeeMap]) => {
+    if (!isPlainObject(employeeMap)) return;
+    normalized[monthKey] = {};
+    Object.entries(employeeMap).forEach(([empId, entries]) => {
+      if (!isPlainObject(entries)) return;
+      normalized[monthKey][empId] = {};
+      Object.entries(entries).forEach(([day, serviceId]) => {
+        const dayNum = Number(day);
+        if (Number.isInteger(dayNum) && dayNum > 0) {
+          normalized[monthKey][empId][dayNum] = serviceId;
+        }
+      });
+    });
+  });
+  return normalized;
+}
+
+function normalizeLocks(raw) {
+  if (!isPlainObject(raw)) return {};
+  const normalized = {};
+  Object.entries(raw).forEach(([monthKey, employeeMap]) => {
+    if (!isPlainObject(employeeMap)) return;
+    normalized[monthKey] = {};
+    Object.entries(employeeMap).forEach(([empId, entries]) => {
+      if (!isPlainObject(entries)) return;
+      normalized[monthKey][empId] = {};
+      Object.entries(entries).forEach(([day, locked]) => {
+        const dayNum = Number(day);
+        if (Number.isInteger(dayNum) && dayNum > 0) {
+          normalized[monthKey][empId][dayNum] = !!locked;
+        }
+      });
+    });
+  });
+  return normalized;
+}
+
 const DEFAULT_EMPLOYMENT = [
   { id: uuid(), percent: 100, hours: 173 },
   { id: uuid(), percent: 80, hours: 138 },
@@ -522,8 +564,8 @@ function loadState() {
   rules.vacationDefault = Number.isFinite(Number(rules.vacationDefault))
     ? Number(rules.vacationDefault)
     : DEFAULT_RULES.vacationDefault;
-  const assignments = loadValue(STORAGE_KEYS.assignments, {});
-  const locks = loadValue(STORAGE_KEYS.locks, {});
+  const assignments = normalizeAssignments(loadValue(STORAGE_KEYS.assignments, {}));
+  const locks = normalizeLocks(loadValue(STORAGE_KEYS.locks, {}));
   const groups = loadArray(STORAGE_KEYS.groups, []);
   const sanitizedGroups = sanitizeGroups(groups);
   const employees = normalizeEmployees(employeesWithDefaults, sanitizedGroups);
@@ -532,6 +574,8 @@ function loadState() {
   const vacationLimits = normalizeVacationLimits(loadValue(STORAGE_KEYS.vacationLimits, []));
   const tickets = normalizeTickets(loadArray(STORAGE_KEYS.tickets, []));
   const missionSettings = loadValue(STORAGE_KEYS.missionSettings, DEFAULT_MISSION_SETTINGS);
+  localStorage.setItem(STORAGE_KEYS.assignments, JSON.stringify(assignments));
+  localStorage.setItem(STORAGE_KEYS.locks, JSON.stringify(locks));
   cleanEmployeeGroups(employees, sanitizedGroups);
   return {
     employment,
@@ -5638,6 +5682,12 @@ function initSafely() {
   } catch (err) {
     console.error('Fehler beim Initialisieren', err);
     showNotification('Fehler beim Starten der Anwendung', 'error');
+    try {
+      if (!currentUser) forceDefaultLogin();
+      applyPermissions();
+    } catch (nestedError) {
+      console.error('Konnte Fallback-Login nicht anwenden', nestedError);
+    }
   }
 }
 
