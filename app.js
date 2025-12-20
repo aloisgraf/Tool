@@ -418,6 +418,7 @@ const ticketReporterEmailInput = document.getElementById('ticketReporterEmail');
 const ticketAreaInput = document.getElementById('ticketArea');
 const ticketStatusFilter = document.getElementById('ticketStatusFilter');
 const ticketList = document.getElementById('ticketList');
+const scoreLegend = document.getElementById('scoreLegend');
 const scoreHistoryTable = document.getElementById('scoreHistoryTable');
 const planningSettings = document.getElementById('planningSettings');
 const adminSettings = document.getElementById('adminSettings');
@@ -678,6 +679,26 @@ function computeWeightAdjustments(weights = {}) {
     adjustments[key] = { base, used, delta };
   });
   return adjustments;
+}
+
+function describePenaltyScore(score) {
+  if (!Number.isFinite(score)) return 'Keine Angabe';
+  if (score < 2000) return 'Sehr gut';
+  if (score < 8000) return 'Gut';
+  if (score < 15000) return 'Ausbaufähig';
+  return 'Kritisch';
+}
+
+function totalHolidayRequirements(monthDate) {
+  let total = 0;
+  const days = daysInMonth(monthDate);
+  for (let day = 1; day <= days; day++) {
+    const date = new Date(monthDate.getFullYear(), monthDate.getMonth(), day);
+    if (!isHoliday(date) && date.getDay() !== 0) continue;
+    const req = getRequiredServicesForDate(date) || [];
+    total += req.length;
+  }
+  return total;
 }
 
 function sanitizeGroups(groups = []) {
@@ -3223,7 +3244,7 @@ function renderScoreHistory() {
     : [];
 
   if (!history.length) {
-    if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="muted">Noch keine Dienstpläne bewertet.</td></tr>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="muted">Noch keine Dienstpläne bewertet.</td></tr>';
     return;
   }
 
@@ -3235,7 +3256,11 @@ function renderScoreHistory() {
       const adjustedKeys = Object.values(adjustments || {}).filter((a) => Math.abs(a.delta) > 0.01);
       const note = entry.note || (adjustedKeys.length ? 'Lernanpassung aktiv' : 'Basisgewichte genutzt');
       const monthLabel = formatMonthKeyLabel(entry.monthKey) || entry.monthKey || '-';
-      const cost = Number.isFinite(entry.cost) ? entry.cost.toFixed(1) : '-';
+      const costNumber = Number(entry.cost);
+      const cost = Number.isFinite(costNumber) ? costNumber.toFixed(1) : '-';
+      const costBadge = `<div class="metric-tags"><span class="pill">${escapeHtml(String(cost))}</span><span class="pill small muted">${escapeHtml(
+        describePenaltyScore(costNumber)
+      )}</span></div>`;
       const metricBadges = `
         <div class="metric-tags">
           <span class="pill small">Stunden σ²: ${(metrics.hourVariance ?? 0).toFixed(3)}</span>
@@ -3244,6 +3269,11 @@ function renderScoreHistory() {
           <span class="pill small">Feiertage σ²: ${(metrics.holidayVariance ?? 0).toFixed(3)}</span>
           <span class="pill small">Inseln: ${(metrics.isolationPenalty ?? 0).toFixed(3)}</span>
         </div>`;
+      const perEmployee = Array.isArray(entry.perEmployee)
+        ? entry.perEmployee
+            .map((p) => `<span class="pill small">${escapeHtml(p.name || p.empId || 'Mitarbeiter')}: ${Number(p.score || 0).toFixed(1)}</span>`)
+            .join('')
+        : '<span class="pill small muted">Keine Daten</span>';
       const weightTags = Object.keys(BASE_SCORE_WEIGHTS)
         .map((key) => {
           const adj = adjustments?.[key];
@@ -3258,9 +3288,11 @@ function renderScoreHistory() {
       return `
         <tr>
           <td>${escapeHtml(monthLabel)}</td>
-          <td>${escapeHtml(cost)}</td>
+          <td>${costBadge}</td>
+          <td><div class="metric-tags">${perEmployee}</div></td>
           <td>${metricBadges}</td>
           <td><div class="metric-tags">${weightTags}</div></td>
+          <td><span class="pill small">${(entry.swapCount || 0).toString()}</span></td>
           <td><div class="metric-tags"><span class="pill small">${escapeHtml(note)}</span><span class="pill small muted">${escapeHtml(
         adjustmentText
       )}</span></div></td>
@@ -4659,6 +4691,17 @@ class RosterOptimizer {
     this.state = sourceState;
     this.rules = rules || {};
 
+    this.scoreWeights = {
+      hours: 4.5,
+      weekend: 3.5,
+      holiday: 3.2,
+      night: 4,
+      islands: 2,
+      uncovered: 50,
+    };
+    this.swapCount = 0;
+    this.lastScoreDetails = null;
+
     this.employees = (sourceState.employees || []).slice();
     this.services = (sourceState.services || []).slice();
     this.assignments = new Map();
@@ -4802,16 +4845,15 @@ class RosterOptimizer {
    * Berechnet den Penalty-Score für den aktuellen Plan.
    */
   computeScore(plan = this.assignments) {
-    const WEIGHTS = {
-      hours: 4.5,
-      weekend: 3.5,
-      holiday: 3.2,
-      night: 4,
-      islands: 2,
-      uncovered: 50,
-    };
+    const details = this.evaluatePlan(plan);
+    this.lastScoreDetails = details;
+    return details.total;
+  }
 
+  evaluatePlan(plan = this.assignments) {
     let cost = 0;
+    const perEmployee = new Map();
+    const WEIGHTS = this.scoreWeights;
 
     for (let day = 1; day <= this.days; day++) {
       const required = this.requirements.get(day) || [];
@@ -4840,24 +4882,28 @@ class RosterOptimizer {
         return svc ? sum + serviceDuration(svc) : sum;
       }, 0);
       const target = monthlyTargetHours(emp, this.monthDate) || 0;
+      let personalCost = 0;
       if (target > 0) {
         const rel = (hours - target) / target;
-        cost += rel * rel * 100 * WEIGHTS.hours;
+        personalCost += rel * rel * 100 * WEIGHTS.hours;
       }
 
       const weekendCount = weekendKeysForEmployee(entries, this.monthDate).size;
       const weekendDiff = weekendCount - weekendTargets;
-      cost += weekendDiff * weekendDiff * 20 * WEIGHTS.weekend;
+      personalCost += weekendDiff * weekendDiff * 20 * WEIGHTS.weekend;
 
       const { nights, holidays } = countSpecials(entries, this.monthDate, this.services);
       const nightIdeal = totalNightRequirements(this.monthDate) / Math.max(1, this.nightPoolSize);
-      cost += (nights - nightIdeal) * (nights - nightIdeal) * 15 * WEIGHTS.night;
-      cost += (holidays - holidayTarget) * (holidays - holidayTarget) * 10 * WEIGHTS.holiday;
+      personalCost += (nights - nightIdeal) * (nights - nightIdeal) * 15 * WEIGHTS.night;
+      personalCost += (holidays - holidayTarget) * (holidays - holidayTarget) * 10 * WEIGHTS.holiday;
 
-      cost += calculateIslandPenalty(entries, this.monthDate) * WEIGHTS.islands;
+      personalCost += calculateIslandPenalty(entries, this.monthDate) * WEIGHTS.islands;
+
+      perEmployee.set(emp.id, personalCost);
+      cost += personalCost;
     }
 
-    return cost;
+    return { total: cost, perEmployee };
   }
 
   randomMove() {
@@ -4909,6 +4955,7 @@ class RosterOptimizer {
    */
   async optimize() {
     this.buildInitialPlan();
+    this.swapCount = 0;
     let bestPlan = this.clonePlan(this.assignments);
     let bestScore = this.computeScore(bestPlan);
     let temperature = 1.0;
@@ -4927,6 +4974,7 @@ class RosterOptimizer {
       const accept = delta < 0 || Math.exp(-delta / Math.max(0.001, temperature)) > Math.random();
 
       if (accept) {
+        this.swapCount += 1;
         if (nextScore < bestScore) {
           bestScore = nextScore;
           bestPlan = this.clonePlan(this.assignments);
@@ -4940,7 +4988,9 @@ class RosterOptimizer {
     }
 
     this.assignments = bestPlan;
-    return { assignments: this.toStateAssignments(bestPlan) };
+    const finalDetails = this.evaluatePlan(bestPlan);
+    this.lastScoreDetails = finalDetails;
+    return { assignments: this.toStateAssignments(bestPlan), scoreDetails: finalDetails, weights: this.scoreWeights, swapCount: this.swapCount };
   }
 }
 
@@ -5035,10 +5085,34 @@ function shuffleArray(arr) {
 
 async function generatePlanSmart() {
   const optimizer = new RosterOptimizer(currentMonth, { state, rules: state.rules });
-  const { assignments } = await optimizer.optimize();
-  state.assignments[getMonthKey(currentMonth)] = assignments;
+  const result = await optimizer.optimize();
+  const monthKey = getMonthKey(currentMonth);
+  state.assignments[monthKey] = result.assignments;
+
+  const days = daysInMonth(currentMonth);
+  const employees = getOrderedEmployees();
+  const allowedWorkedWeekends = Math.max(0, Math.ceil(days / 7) - (state.rules?.minFreeWeekends || 0));
+  const totalNightReq = totalNightRequirements(currentMonth);
+  const totalHolidayReq = totalHolidayRequirements(currentMonth);
+  const metrics = collectPlanMetrics(monthKey, days, employees, allowedWorkedWeekends, totalNightReq, totalHolidayReq);
+  const perEmployee = Array.from(result.scoreDetails?.perEmployee || []).map(([empId, score]) => {
+    const emp = employees.find((e) => e.id === empId) || {};
+    return { empId, name: formatName(emp), score };
+  });
+  recordOptimizerHistory({
+    monthKey,
+    cost: result.scoreDetails?.total,
+    metrics,
+    weights: result.weights,
+    perEmployee,
+    swapCount: result.swapCount || 0,
+    note: 'Penalty Score gespeichert',
+    timestamp: Date.now(),
+  });
+
   appendLog('roster', 'Neuer Plan via RosterOptimizer generiert.');
   saveState();
+  renderScoreHistory();
   renderRoster();
 }
 
@@ -5189,6 +5263,14 @@ function collectPlanMetrics(
   metrics.holidayVariance /= divisor;
   metrics.isolationPenalty /= divisor;
   return metrics;
+}
+
+function recordOptimizerHistory(entry) {
+  const profile = loadOptimizerProfile();
+  const history = Array.isArray(profile.history) ? profile.history.slice() : [];
+  history.push(entry);
+  profile.history = history.slice(-50);
+  saveOptimizerProfile(profile);
 }
 
 

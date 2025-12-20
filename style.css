@@ -538,6 +538,9 @@ textarea { resize: vertical; font: inherit; }
 .score-table th, .score-table td { border: 1px solid var(--border); padding: .45rem .5rem; text-align: left; vertical-align: top; }
 .score-table th { background: rgba(148, 163, 184, 0.1); color: var(--text); }
 .light-theme .score-table th { background: #e2e8f0; }
+.score-legend { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: .75rem; }
+.score-legend h3 { margin: 0 0 .35rem; font-size: 1rem; }
+.score-legend p { margin: 0 0 .35rem; color: var(--text-muted); }
 .metric-tags { display: flex; flex-wrap: wrap; gap: .35rem; }
 .metric-tags .pill.muted { color: var(--muted); border-color: var(--border); background: transparent; }
 
