@@ -4686,29 +4686,15 @@ class RosterOptimizer {
     this.state = state;
     this.monthKey = getMonthKey(this.monthDate);
     this.daysInMonth = new Date(this.monthDate.getFullYear(), this.monthDate.getMonth() + 1, 0).getDate();
-    this.assignments = {}; // Format: { empId: { day: serviceId } }
+    this.assignments = {};
     this.employees = state.employees.filter((e) => e.status === 'active');
   }
 
-  // 1. Prüfung, ob ein Mitarbeiter einen bestimmten Dienst technisch darf
-  canEmployeeDoService(empId, serviceId) {
-    const employee = this.state.employees.find((e) => e.id === empId);
-    const service = this.state.services.find((s) => s.id === serviceId);
-
-    if (!employee || !service) return false;
-
-    const func = this.state.functions.find((f) => f.id === employee.functionId);
-    return Array.isArray(func?.serviceIds) && func.serviceIds.includes(service.id);
-  }
-
   async run() {
-    // Schritt 1: Initialer Zufallsplan (Alle benötigten Dienste besetzen)
-    this.generateInitialPlan();
+    this.forceFullAssignment();
 
-    // Schritt 2: Optimierung durch Simulated Annealing
-    let currentScore = this.calculateTotalPenalty();
-    let iterations = 10000; // 10.000 Tauschversuche
-    let temp = 100; // Starttemperatur
+    let iterations = 15000;
+    let temp = 100;
 
     for (let i = 0; i < iterations; i++) {
       const move = this.proposeMove();
@@ -4716,45 +4702,84 @@ class RosterOptimizer {
 
       const delta = this.calculateDelta(move);
 
-      // Akzeptiere Tausch, wenn er besser ist ODER per Zufall (gegen lokale Optima)
       if (delta < 0 || Math.random() < Math.exp(-delta / temp)) {
         this.applyMove(move);
-        currentScore += delta;
       }
-
-      temp *= 0.9995; // Abkühlen
-
-      // UI-Thread alle 500 Schritte entlasten
-      if (i % 500 === 0) await new Promise((r) => setTimeout(r, 0));
+      temp *= 0.999;
+      if (i % 1000 === 0) await new Promise((r) => setTimeout(r, 0));
     }
-
     return this.assignments;
   }
 
-  generateInitialPlan() {
+  forceFullAssignment() {
     for (let d = 1; d <= this.daysInMonth; d++) {
-      const required = this.getRequiredServicesForDay(d);
-      required.forEach((sId) => {
-        const qualifiedEmps = this.employees.filter((emp) => this.canEmployeeDoService(emp.id, sId));
+      const requiredServiceIds = this.getRequiredServicesForDay(d);
 
-        if (qualifiedEmps.length > 0) {
-          const emp = qualifiedEmps[Math.floor(Math.random() * qualifiedEmps.length)];
-          if (!this.assignments[emp.id]) this.assignments[emp.id] = {};
-          this.assignments[emp.id][d] = sId;
+      requiredServiceIds.forEach((serviceId) => {
+        const qualified = this.employees.filter((emp) => this.canEmployeeDoService(emp.id, serviceId));
+
+        if (qualified.length > 0) {
+          qualified.sort((a, b) => this.getWorkload(a.id) - this.getWorkload(b.id));
+          const bestFit = qualified[0];
+
+          if (!this.assignments[bestFit.id]) this.assignments[bestFit.id] = {};
+          this.assignments[bestFit.id][d] = serviceId;
         } else {
-          console.warn(`Kein qualifizierter Mitarbeiter für Dienst ${sId} an Tag ${d} gefunden!`);
+          console.error(`KRITISCH: Kein Personal für Dienst ${serviceId} am Tag ${d}`);
         }
       });
     }
+  }
+
+  canEmployeeDoService(empId, serviceId) {
+    const emp = this.state.employees.find((e) => e.id === empId);
+    const srv = this.state.services.find((s) => s.id === serviceId);
+    if (!emp || !srv) return false;
+
+    const func = this.state.functions.find((f) => f.id === emp.functionId);
+    return Array.isArray(func?.serviceIds) && func.serviceIds.includes(srv.id);
+  }
+
+  calculateDelta(move) {
+    const canA = move.valB ? this.canEmployeeDoService(move.empAId, move.valB) : true;
+    const canB = move.valA ? this.canEmployeeDoService(move.empBId, move.valA) : true;
+    if (!canA || !canB) return 999999;
+
+    const scoreBefore = this.getEmpScore(move.empAId) + this.getEmpScore(move.empBId);
+
+    const oldA = this.assignments[move.empAId]?.[move.day];
+    const oldB = this.assignments[move.empBId]?.[move.day];
+
+    this.updateAssignment(move.empAId, move.day, move.valB);
+    this.updateAssignment(move.empBId, move.day, move.valA);
+
+    const scoreAfter = this.getEmpScore(move.empAId) + this.getEmpScore(move.empBId);
+
+    this.updateAssignment(move.empAId, move.day, oldA);
+    this.updateAssignment(move.empBId, move.day, oldB);
+
+    return scoreAfter - scoreBefore;
+  }
+
+  getEmpScore(empId) {
+    let penalty = 0;
+    const work = this.assignments[empId] || {};
+    const dayCount = Object.keys(work).length;
+
+    const hours = dayCount * 12;
+    penalty += Math.abs(hours - 160) * 5;
+
+    return penalty;
+  }
+
+  getWorkload(empId) {
+    return Object.keys(this.assignments[empId] || {}).length;
   }
 
   proposeMove() {
     const day = Math.floor(Math.random() * this.daysInMonth) + 1;
     const empA = this.employees[Math.floor(Math.random() * this.employees.length)];
     const empB = this.employees[Math.floor(Math.random() * this.employees.length)];
-
-    if (empA.id === empB.id) return null;
-
     return {
       day,
       empAId: empA.id,
@@ -4762,65 +4787,6 @@ class RosterOptimizer {
       valA: this.assignments[empA.id]?.[day] || null,
       valB: this.assignments[empB.id]?.[day] || null,
     };
-  }
-
-  calculateDelta(move) {
-    // Prüfe, ob der Tausch überhaupt erlaubt ist (Qualifikation)
-    const canA = move.valB ? this.canEmployeeDoService(move.empAId, move.valB) : true;
-    const canB = move.valA ? this.canEmployeeDoService(move.empBId, move.valA) : true;
-
-    if (!canA || !canB) {
-      return 999999; // Extrem hohe Strafe -> Tausch wird niemals akzeptiert
-    }
-
-    const scoreBefore = this.getEmpScore(move.empAId) + this.getEmpScore(move.empBId);
-
-    this.updateAssignment(move.empAId, move.day, move.valB);
-    this.updateAssignment(move.empBId, move.day, move.valA);
-
-    const scoreAfter = this.getEmpScore(move.empAId) + this.getEmpScore(move.empBId);
-
-    // Zurücksetzen
-    this.updateAssignment(move.empAId, move.day, move.valA);
-    this.updateAssignment(move.empBId, move.day, move.valB);
-
-    return scoreAfter - scoreBefore;
-  }
-
-  // Berechnet die Strafpunkte für einen Mitarbeiter basierend auf echten Daten
-  getEmpScore(empId) {
-    let penalty = 0;
-    const assignments = this.assignments[empId] || {};
-    const days = Object.keys(assignments)
-      .map(Number)
-      .sort((a, b) => a - b);
-
-    // 1. Stunden-Bilanz (Gewicht: 3.5)
-    const totalHours = days.length * 12;
-    const targetHours = monthlyTargetHours(this.state.employees.find((e) => e.id === empId) || {}, this.monthDate) || 160;
-    penalty += Math.abs(totalHours - targetHours) * 3.5;
-
-    // 2. Ruhezeiten & Nachtdienste (Gewicht: 8)
-    for (let i = 0; i < days.length; i++) {
-      const currentDay = days[i];
-      const nextDay = days[i + 1];
-
-      if (nextDay === currentDay + 1) {
-        const currentService = this.state.services.find((s) => s.id === assignments[currentDay]);
-        if (currentService?.isNight) {
-          penalty += 50 * 8; // Massive Strafe für verletzte Ruhezeit nach Nacht
-        }
-      }
-    }
-
-    // 3. Wochenend-Balance (Gewicht: 4.5)
-    const weekends = days.filter((d) => {
-      const date = new Date(this.monthDate.getFullYear(), this.monthDate.getMonth(), d);
-      return date.getDay() === 0 || date.getDay() === 6;
-    });
-    penalty += weekends.length * 4.5;
-
-    return penalty;
   }
 
   updateAssignment(empId, day, val) {
@@ -4834,24 +4800,11 @@ class RosterOptimizer {
     this.updateAssignment(move.empBId, move.day, move.valA);
   }
 
-  calculateTotalPenalty() {
-    return this.employees.reduce((sum, emp) => sum + this.getEmpScore(emp.id), 0);
-  }
-
   getRequiredServicesForDay(day) {
     const date = new Date(this.monthDate.getFullYear(), this.monthDate.getMonth(), day);
     const dayOfWeek = date.getDay();
     const rule = this.state.rules.weekdayRules[0];
-    return rule.services[dayOfWeek === 0 ? 0 : dayOfWeek] || [];
-  }
-
-  getCounts(empId) {
-    const data = this.assignments[empId] || {};
-    const services = Object.values(data);
-    return {
-      hours: services.length * 12,
-      nights: services.filter((s) => typeof s === 'string' && s.includes('N')).length,
-    };
+    return rule.services[dayOfWeek] || [];
   }
 }
 
@@ -4875,7 +4828,7 @@ function shuffleArray(arr) {
 }
 
 async function generatePlanSmart() {
-  showNotification('Optimierung läuft (10.000 Iterationen)...', 'info');
+  showNotification('Optimierung läuft (15.000 Iterationen)...', 'info');
   try {
     const optimizer = new RosterOptimizer(currentMonth, state);
     const result = await optimizer.run();
