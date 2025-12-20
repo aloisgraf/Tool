@@ -4678,508 +4678,69 @@ function countStreakForMonth(empId, day, predicate, monthKey) {
 }
 
 /**
- * Lightweight delay helper to chunk async optimizer passes.
- * @param {number} ms
- * @returns {Promise<void>}
- */
-function wait(ms = 0) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Optimiert die Dienstplanung mithilfe eines Simulated-Annealing-Ansatzes.
- * Hard-Constraints werden strikt geprüft, Soft-Constraints fließen in den Score ein.
+ * RosterOptimizer - Kernlogik für die Dienstplan-Generierung
  */
 class RosterOptimizer {
-  /**
-   * @param {Date} monthDate
-   * @param {{ state: any, rules?: any } | any} params
-   */
-  constructor(monthDate, params) {
-    const sourceState = params?.state ?? params;
-    const rules = params?.rules;
-    this.monthDate = monthDate;
-    this.monthKey = getMonthKey(monthDate);
-    this.days = daysInMonth(monthDate);
-    this.state = sourceState;
-    this.rules = rules || {};
-    this.temperature = 1.0;
-
-    this.scoreWeights = {
-      hours: 4.5,
-      weekend: 3.5,
-      holiday: 3.2,
-      night: 4,
-      islands: 2,
-      uncovered: 50,
-    };
-    this.swapCount = 0;
-    this.lastScoreDetails = null;
-
-    this.employees = (sourceState.employees || []).slice();
-    this.services = (sourceState.services || []).slice();
-    this.assignments = new Map();
-    this.c10Counts = new Map();
-
-    this.requirements = new Map();
-    this.weekendMap = new Map();
-    this.nightPoolSize = Math.max(1, this.employees.filter((e) => e.nightAllowed).length);
-    this.buildCaches();
+  constructor(monthDate, state) {
+    this.monthDate = new Date(monthDate);
+    this.state = state;
+    this.monthKey = getMonthKey(this.monthDate);
+    this.daysInMonth = new Date(this.monthDate.getFullYear(), this.monthDate.getMonth() + 1, 0).getDate();
+    this.assignments = new Map(); // employeeId -> Map(day -> serviceId)
   }
 
-  buildCaches() {
-    ensureMonthMaps(this.monthKey);
-    for (let day = 1; day <= this.days; day++) {
-      const date = new Date(this.monthDate.getFullYear(), this.monthDate.getMonth(), day);
-      this.requirements.set(day, getRequiredServicesForDate(date));
-      const wk = weekendKeyForDate(date);
-      if (wk) this.weekendMap.set(day, wk);
-    }
+  // Erstellt einen ersten Entwurf (alle Dienste zufällig besetzen)
+  async run() {
+    console.log("Starte Generierung...");
+    const employees = this.state.employees.filter(e => e.status === 'active');
+    
+    // Initialisierung: Leere Maps für alle Mitarbeiter
+    employees.forEach(emp => this.assignments.set(emp.id, new Map()));
 
-    this.employees.forEach((emp) => {
-      const perDay = this.state.assignments?.[this.monthKey]?.[emp.id] || {};
-      const map = new Map();
-      Object.entries(perDay).forEach(([d, sid]) => map.set(Number(d), sid));
-      this.assignments.set(emp.id, map);
-      if (sidIsC10(perDay)) {
-        this.c10Counts.set(emp.id, 1);
-      }
-    });
-  }
-
-  calculateTotalScore() {
-    return this.computeScore(this.assignments);
-  }
-
-  maxPerEmployeeScore(details) {
-    const values = Array.from(details?.perEmployee?.values?.() || details?.perEmployee || []);
-    if (!values.length) return 0;
-    return Math.max(...values);
-  }
-
-  /**
-   * Erstellt einen zufälligen, möglichst validen Startplan.
-   */
-  buildInitialPlan() {
-    for (let day = 1; day <= this.days; day++) {
-      const required = this.requirements.get(day) || [];
-      required.forEach((service) => {
-        if (this.isServiceAlreadyCovered(day, service.id)) return;
-        const candidates = shuffleArray(this.employees.slice());
-        for (const emp of candidates) {
-          if (this.tryAssign(emp, day, service.id)) break;
+    // Gehe jeden Tag im Monat durch
+    for (let day = 1; day <= this.daysInMonth; day++) {
+      const requiredServices = this.getRequiredServicesForDay(day);
+      
+      for (const serviceId of requiredServices) {
+        // Finde verfügbare Mitarbeiter (sehr einfache Logik für den Anfang)
+        const candidates = employees.filter(emp => this.isPossible(emp, day, serviceId));
+        
+        if (candidates.length > 0) {
+          // Zufälligen Kandidaten wählen
+          const chosen = candidates[Math.floor(Math.random() * candidates.length)];
+          this.assignments.get(chosen.id).set(day, serviceId);
         }
-      });
-    }
-  }
-
-  generateRandomMove() {
-    const day = 1 + Math.floor(Math.random() * this.days);
-    const requirements = this.requirements.get(day) || [];
-    const assigned = this.employees
-      .map((emp) => {
-        const sid = (this.assignments.get(emp.id) || new Map()).get(day);
-        return sid ? { emp, sid } : null;
-      })
-      .filter(Boolean);
-
-    let serviceId = null;
-    let fromEmp = null;
-    const shuffled = shuffleArray(this.employees.slice());
-    const toEmp = shuffled.find((emp) => !!emp);
-    if (!toEmp) return null;
-
-    if (assigned.length) {
-      const pick = assigned[Math.floor(Math.random() * assigned.length)];
-      fromEmp = pick.emp;
-      serviceId = pick.sid;
-    } else if (requirements.length) {
-      const svc = requirements[Math.floor(Math.random() * requirements.length)];
-      serviceId = svc?.id || null;
-    }
-
-    if (!serviceId) return null;
-    if (fromEmp && toEmp.id === fromEmp.id) return null;
-    return { day, serviceId, from: fromEmp?.id || null, to: toEmp.id };
-  }
-
-  calculateScoreDelta(move) {
-    const base = this.calculateTotalScore();
-    const rollback = this.applyMove(move);
-    if (!rollback) return Infinity;
-    const next = this.calculateTotalScore();
-    rollback();
-    return next - base;
-  }
-
-  applyMove(move) {
-    if (!move) return null;
-    const { day, serviceId, from, to } = move;
-    const service = this.services.find((s) => s.id === serviceId);
-    const toEmp = this.employees.find((e) => e.id === to);
-    if (!service || !toEmp) return null;
-
-    if (!this.validateHard(toEmp, day, service)) return null;
-
-    const fromMap = from ? this.assignments.get(from) || new Map() : null;
-    const toMap = this.assignments.get(to) || new Map();
-    if (toMap.has(day)) return null;
-    const prevFrom = fromMap ? fromMap.get(day) : undefined;
-    const prevTo = toMap.get(day);
-
-    if (fromMap) {
-      fromMap.delete(day);
-      this.assignments.set(from, fromMap);
-    }
-
-    toMap.set(day, serviceId);
-    this.assignments.set(to, toMap);
-    this.recalculateC10Count(from);
-    this.recalculateC10Count(to);
-
-    return () => {
-      toMap.delete(day);
-      if (fromMap && prevFrom) {
-        fromMap.set(day, prevFrom);
-        this.assignments.set(from, fromMap);
       }
-      if (prevTo) {
-        toMap.set(day, prevTo);
-      }
-      this.recalculateC10Count(from);
-      this.recalculateC10Count(to);
-    };
-  }
+      // UI-Thread kurz atmen lassen
+      if (day % 5 === 0) await new Promise(r => setTimeout(r, 0));
+    }
 
-  recalculateC10Count(empId) {
-    if (!empId) return;
-    const entries = this.assignments.get(empId) || new Map();
-    const count = Array.from(entries.values()).reduce((sum, sid) => {
-      const svc = this.services.find((s) => s.id === sid);
-      return sum + (isC10Service(svc) ? 1 : 0);
-    }, 0);
-    this.c10Counts.set(empId, count);
-  }
-
-  /**
-   * @param {Map<string, Map<number, string>>} plan
-   */
-  clonePlan(plan) {
-    const copy = new Map();
-    plan.forEach((map, empId) => {
-      const next = new Map();
-      map.forEach((val, key) => next.set(key, val));
-      copy.set(empId, next);
+    // Konvertiere Map zurück in das Format für den State
+    const result = {};
+    this.assignments.forEach((dayMap, empId) => {
+      result[empId] = Object.fromEntries(dayMap);
     });
-    return copy;
+    return result;
   }
 
-  toStateAssignments(plan = this.assignments) {
-    const output = {};
-    plan.forEach((days, empId) => {
-      output[empId] = {};
-      days.forEach((sid, day) => {
-        output[empId][day] = sid;
-      });
-    });
-    return output;
-  }
-
-  /**
-   * Prüft, ob ein Dienst bereits vergeben ist (Deckung der Anforderungen zählt einfach pro Slot).
-   */
-  isServiceAlreadyCovered(day, serviceId) {
-    let assigned = 0;
-    this.assignments.forEach((entries) => {
-      if (entries.get(day) === serviceId) assigned++;
-    });
-    const required = (this.requirements.get(day) || []).filter((s) => s.id === serviceId).length;
-    return assigned >= required;
-  }
-
-  /**
-   * Prüft Hard-Constraints für eine mögliche Zuweisung.
-   */
-  validateHard(emp, day, service) {
+  getRequiredServicesForDay(day) {
+    // Holt die Dienste aus den Weekday-Rules
     const date = new Date(this.monthDate.getFullYear(), this.monthDate.getMonth(), day);
-    if (!isEmployeeActiveOnDate(emp, date)) return false;
-    if (findVacationOnDate(emp, date) || findSickOnDate(emp, date)) return false;
-    if (this.state.locks[this.monthKey]?.[emp.id]?.[day]) return false;
-    if (hasNextDayAbsenceOrWish(emp, date) && isNightService(service)) return false;
-    if (isDayAfterNight(emp, date)) return false;
-    if (!employeeAllowedForService(emp, service)) return false;
-    if (isNightService(service) && !emp.nightAllowed) return false;
+    const dayOfWeek = date.getDay(); // 0=So, 1=Mo...
+    const rule = this.state.rules.weekdayRules[0]; // Einfachheitshalber die erste Regel
+    return rule.services[dayOfWeek] || [];
+  }
 
-    const dayAssignments = this.assignments.get(emp.id) || new Map();
-    if (dayAssignments.has(day)) return false;
-
-    if (!hasMinimumRestHours(emp, day, service)) return false;
-    if (!respectsRestAfterNights(emp, day)) return false;
-
-    if (isC10Service(service) && (this.c10Counts.get(emp.id) || 0) >= 1) return false;
-
-    const dow = date.getDay();
-    if (dow === 6) {
-      const sunday = new Date(date.getFullYear(), date.getMonth(), day + 1);
-      const sundayReq = getRequiredServicesForDate(sunday);
-      if (sundayReq.some((s) => s.id === service.id) && !isEmployeeActiveOnDate(emp, sunday)) {
-        return false;
-      }
-    }
-    if (dow === 0) {
-      const previous = dayAssignments.get(day - 1);
-      if (previous && previous !== service.id) return false;
-    }
+  isPossible(emp, day, serviceId) {
+    // Einfache Prüfung: Hat der Mitarbeiter schon einen Dienst an diesem Tag?
+    if (this.assignments.get(emp.id).has(day)) return false;
+    
+    // Check Locks (Sperrtage)
+    const locks = this.state.locks[this.monthKey]?.[emp.id];
+    if (locks && locks[day]) return false;
 
     return true;
   }
-
-  tryAssign(emp, day, serviceId) {
-    const service = this.services.find((s) => s.id === serviceId);
-    if (!service) return false;
-    if (!this.validateHard(emp, day, service)) return false;
-    const dayAssignments = this.assignments.get(emp.id) || new Map();
-    dayAssignments.set(day, serviceId);
-    this.assignments.set(emp.id, dayAssignments);
-    if (isC10Service(service)) this.c10Counts.set(emp.id, 1);
-    return true;
-  }
-
-  removeAssignment(empId, day) {
-    const map = this.assignments.get(empId);
-    if (!map) return null;
-    const sid = map.get(day);
-    map.delete(day);
-    return sid;
-  }
-
-  /**
-   * Berechnet den Penalty-Score für den aktuellen Plan.
-   */
-  computeScore(plan = this.assignments) {
-    const details = this.evaluatePlan(plan);
-    this.lastScoreDetails = details;
-    return details.total;
-  }
-
-  evaluatePlan(plan = this.assignments) {
-    let cost = 0;
-    const perEmployee = new Map();
-    const WEIGHTS = this.scoreWeights;
-
-    for (let day = 1; day <= this.days; day++) {
-      const required = this.requirements.get(day) || [];
-      const assignedIds = [];
-      plan.forEach((entries) => {
-        const sid = entries.get(day);
-        if (sid) assignedIds.push(sid);
-      });
-      required.forEach((svc) => {
-        const idx = assignedIds.indexOf(svc.id);
-        if (idx !== -1) {
-          assignedIds.splice(idx, 1);
-        } else {
-          cost += WEIGHTS.uncovered * 100;
-        }
-      });
-    }
-
-    const weekendTargets = Math.max(1, Math.round(totalWorkedWeekends(plan, this.monthDate) / Math.max(1, this.employees.length)));
-    const holidayTarget = Math.max(1, Math.round(totalHolidayShifts(plan, this.monthDate) / Math.max(1, this.employees.length)));
-
-    for (const emp of this.employees) {
-      const entries = plan.get(emp.id) || new Map();
-      const hours = Array.from(entries.values()).reduce((sum, sid) => {
-        const svc = this.services.find((s) => s.id === sid);
-        return svc ? sum + serviceDuration(svc) : sum;
-      }, 0);
-      const target = monthlyTargetHours(emp, this.monthDate) || 0;
-      let personalCost = 0;
-      if (target > 0) {
-        const rel = (hours - target) / target;
-        personalCost += rel * rel * 100 * WEIGHTS.hours;
-      }
-
-      const weekendCount = weekendKeysForEmployee(entries, this.monthDate).size;
-      const weekendDiff = weekendCount - weekendTargets;
-      personalCost += weekendDiff * weekendDiff * 20 * WEIGHTS.weekend;
-
-      const { nights, holidays } = countSpecials(entries, this.monthDate, this.services);
-      const nightIdeal = totalNightRequirements(this.monthDate) / Math.max(1, this.nightPoolSize);
-      personalCost += (nights - nightIdeal) * (nights - nightIdeal) * 15 * WEIGHTS.night;
-      personalCost += (holidays - holidayTarget) * (holidays - holidayTarget) * 10 * WEIGHTS.holiday;
-
-      personalCost += calculateIslandPenalty(entries, this.monthDate) * WEIGHTS.islands;
-
-      perEmployee.set(emp.id, personalCost);
-      cost += personalCost;
-    }
-
-    return { total: cost, perEmployee };
-  }
-
-  randomMove() {
-    const day = 1 + Math.floor(Math.random() * this.days);
-    const requirement = this.requirements.get(day) || [];
-    const service = requirement[Math.floor(Math.random() * Math.max(1, requirement.length))];
-    if (!service) return null;
-
-    const [donor, receiver] = shuffleArray(this.employees.slice()).slice(0, 2);
-    if (!donor || !receiver) return null;
-
-    const donorMap = this.assignments.get(donor.id) || new Map();
-    const receiverMap = this.assignments.get(receiver.id) || new Map();
-    const donorSid = donorMap.get(day);
-    const receiverSid = receiverMap.get(day);
-
-    if (!donorSid && !receiverSid) {
-      if (!this.tryAssign(donor, day, service.id)) return null;
-      return () => {
-        this.removeAssignment(donor.id, day);
-      };
-    }
-
-    const sourceEmp = donorSid ? donor : receiver;
-    const targetEmp = donorSid ? receiver : donor;
-    const serviceId = donorSid || receiverSid;
-    const svc = this.services.find((s) => s.id === serviceId);
-    if (!svc) return null;
-
-    if (!this.validateHard(targetEmp, day, svc)) return null;
-
-    const sourceMap = this.assignments.get(sourceEmp.id) || new Map();
-    const targetMap = this.assignments.get(targetEmp.id) || new Map();
-
-    sourceMap.delete(day);
-    targetMap.set(day, serviceId);
-    this.assignments.set(sourceEmp.id, sourceMap);
-    this.assignments.set(targetEmp.id, targetMap);
-
-    return () => {
-      targetMap.delete(day);
-      sourceMap.set(day, serviceId);
-    };
-  }
-
-  /**
-   * Heuristische Optimierung (Simulated Annealing light):
-   * 1) Starte mit einem zufälligen, gültigen Plan
-   * 2) Führe viele Dienst-Tauschs aus und akzeptiere Verbesserungen
-   * 3) Minimiere sowohl den Gesamtscore als auch die Maximalstrafe pro Mitarbeiter
-   * @param {number} iterations
-   * @returns {Promise<Record<string, Record<number, string>>>}
-   */
-  async runOptimization(iterations = 5000) {
-    this.buildInitialPlan();
-    this.swapCount = 0;
-    this.temperature = 1.0;
-
-    let currentDetails = this.evaluatePlan(this.assignments);
-    let bestPlan = this.clonePlan(this.assignments);
-    let bestDetails = currentDetails;
-
-    for (let i = 0; i < iterations; i++) {
-      const move = this.generateRandomMove();
-      const rollback = this.applyMove(move);
-      if (!rollback) continue;
-
-      const nextDetails = this.evaluatePlan(this.assignments);
-      const currentMax = this.maxPerEmployeeScore(currentDetails);
-      const nextMax = this.maxPerEmployeeScore(nextDetails);
-      const deltaTotal = nextDetails.total - currentDetails.total;
-      const improvesPerEmployee = nextMax < currentMax || (nextMax === currentMax && nextDetails.total <= currentDetails.total);
-      const accept = improvesPerEmployee || Math.random() < Math.exp(-deltaTotal / Math.max(0.001, this.temperature));
-
-      if (accept) {
-        this.swapCount += 1;
-        currentDetails = nextDetails;
-        const bestMax = this.maxPerEmployeeScore(bestDetails);
-        if (nextMax < bestMax || (nextMax === bestMax && nextDetails.total < bestDetails.total)) {
-          bestPlan = this.clonePlan(this.assignments);
-          bestDetails = nextDetails;
-        }
-      } else {
-        rollback();
-      }
-
-      if (i % 100 === 0) await wait(0);
-      this.temperature *= 0.995;
-    }
-
-    this.assignments = bestPlan;
-    this.lastScoreDetails = bestDetails;
-    return this.toStateAssignments(bestPlan);
-  }
-}
-
-function sidIsC10(perDay) {
-  return Object.values(perDay || {}).some((sid) => {
-    const svc = state.services.find((s) => s.id === sid);
-    return isC10Service(svc);
-  });
-}
-
-function calculateIslandPenalty(entries, monthDate) {
-  let penalty = 0;
-  for (let day = 1; day <= daysInMonth(monthDate); day++) {
-    const prev = entries.get(day - 1);
-    const cur = entries.get(day);
-    const next = entries.get(day + 1);
-    if (cur && !prev && !next) penalty += 2;
-    if (prev && !cur && next) penalty += 3;
-  }
-  return penalty;
-}
-
-function weekendKeysForEmployee(entries, monthDate) {
-  const set = new Set();
-  entries.forEach((sid, day) => {
-    const dt = new Date(monthDate.getFullYear(), monthDate.getMonth(), day);
-    if (dt.getDay() === 0 || dt.getDay() === 6) {
-      const wk = weekendKeyForDate(dt);
-      if (wk) set.add(wk);
-    }
-  });
-  return set;
-}
-
-function countSpecials(entries, monthDate, services) {
-  let nights = 0;
-  let holidays = 0;
-  entries.forEach((sid, day) => {
-    const svc = services.find((s) => s.id === sid);
-    if (!svc) return;
-    const dt = new Date(monthDate.getFullYear(), monthDate.getMonth(), day);
-    if (isNightService(svc)) nights++;
-    if (isHoliday(dt) || dt.getDay() === 0) holidays++;
-  });
-  return { nights, holidays };
-}
-
-function totalWorkedWeekends(plan, monthDate) {
-  const seen = new Set();
-  plan.forEach((entries) => {
-    entries.forEach((sid, day) => {
-      if (!sid) return;
-      const dt = new Date(monthDate.getFullYear(), monthDate.getMonth(), day);
-      if (dt.getDay() === 0 || dt.getDay() === 6) {
-        const wk = weekendKeyForDate(dt);
-        if (wk) seen.add(wk);
-      }
-    });
-  });
-  return seen.size;
-}
-
-function totalHolidayShifts(plan, monthDate) {
-  let total = 0;
-  plan.forEach((entries) => {
-    entries.forEach((sid, day) => {
-      const dt = new Date(monthDate.getFullYear(), monthDate.getMonth(), day);
-      if (isHoliday(dt) || dt.getDay() === 0) total++;
-    });
-  });
-  return total;
 }
 
 function totalNightRequirements(monthDate) {
@@ -5202,52 +4763,19 @@ function shuffleArray(arr) {
 }
 
 async function generatePlanSmart() {
-  if (!canEditRoster()) {
-    showNotification('Keine Berechtigung zum Generieren', 'error');
-    return;
-  }
-
-  setButtonLoading(generateBtn, true);
-  const optimizer = new RosterOptimizer(currentMonth, state);
-
   try {
-    const result = await optimizer.runOptimization(5000);
+    const optimizer = new RosterOptimizer(currentMonth, state);
+    const newAssignments = await optimizer.run();
+
     const monthKey = getMonthKey(currentMonth);
-    state.assignments[monthKey] = result;
+    state.assignments[monthKey] = newAssignments;
 
-    const days = daysInMonth(currentMonth);
-    const employees = getOrderedEmployees();
-    const allowedWorkedWeekends = Math.max(0, Math.ceil(days / 7) - (state.rules?.minFreeWeekends || 0));
-    const totalNightReq = totalNightRequirements(currentMonth);
-    const totalHolidayReq = totalHolidayRequirements(currentMonth);
-    const scoreDetails = optimizer.lastScoreDetails;
-    const metrics = collectPlanMetrics(monthKey, days, employees, allowedWorkedWeekends, totalNightReq, totalHolidayReq);
-    const perEmployee = Array.from(scoreDetails?.perEmployee || []).map(([empId, score]) => {
-      const emp = employees.find((e) => e.id === empId) || {};
-      return { empId, name: formatName(emp), score };
-    });
-
-    recordOptimizerHistory({
-      monthKey,
-      cost: scoreDetails?.total,
-      metrics,
-      weights: optimizer.scoreWeights,
-      perEmployee,
-      swapCount: optimizer.swapCount || 0,
-      note: 'Penalty Score gespeichert (heuristisch)',
-      timestamp: Date.now(),
-    });
-
-    appendLog('roster', 'Neuer Plan via RosterOptimizer generiert.');
     saveState();
-    renderScoreHistory();
     renderRoster();
-    showNotification('Plan generiert!', 'success');
+    showNotification('Dienstplan erfolgreich generiert!', 'success');
   } catch (err) {
-    console.error(err);
-    showNotification('Fehler bei der Generierung', 'error');
-  } finally {
-    setButtonLoading(generateBtn, false);
+    console.error('Generierungsfehler Details:', err);
+    showNotification('Fehler: ' + err.message, 'error');
   }
 }
 
@@ -5837,10 +5365,7 @@ function wireEvents() {
       }
     });
   }
-  on(generateBtn, 'click', async () => {
-    showNotification('Generierung läuft...', 'info');
-    await generatePlanSmart();
-  });
+  on(generateBtn, 'click', generatePlanSmart);
   on(clearBtn, 'click', () => {
     if (!canEditRoster()) {
       showNotification('Keine Berechtigung', 'error');
