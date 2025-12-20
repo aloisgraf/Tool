@@ -1274,6 +1274,15 @@ function isDayAfterNight(emp, date) {
   return !!prevService && isNightService(prevService);
 }
 
+function hasNextDayAbsenceOrWish(emp, date) {
+  const monthKey = getMonthKey(date);
+  const day = date.getDate();
+  if (day >= daysInMonth(date)) return false;
+  const nextDate = new Date(date.getFullYear(), date.getMonth(), day + 1);
+  const nextAssign = state.assignments[monthKey]?.[emp.id]?.[day + 1];
+  return nextAssign === 'WUNSCHFREI' || !!findVacationOnDate(emp, nextDate) || !!findSickOnDate(emp, nextDate);
+}
+
 function isDateWithinRange(date, startStr, endStr) {
   const start = parseISODate(startStr);
   const end = parseISODate(endStr);
@@ -3007,6 +3016,8 @@ function handleTicketCardChange(event) {
 function renderServiceChip(service, options = {}) {
   if (!service) return '';
   const classes = ['service-chip'];
+  if (service.id === 'WUNSCHFREI') classes.push('wish-chip');
+  else if (isNightService(service)) classes.push('night-chip');
   if (options.strike) classes.push('strike');
   const windowLabel = service.start && service.end ? `${service.start}–${service.end}` : '';
   const tooltip = [service.name, windowLabel].filter(Boolean).join(' · ');
@@ -4222,6 +4233,20 @@ function handleRosterChange(e) {
         e.target.value = previous;
         return;
       }
+      const prevServiceId = state.assignments[monthKey][emp]?.[day - 1];
+      const prevService = state.services.find((s) => s.id === prevServiceId);
+      if (prevService && isNightService(prevService)) {
+        showNotification('Vor Wunschfrei darf kein Nachtdienst stehen.', 'error');
+        e.target.value = previous;
+        return;
+      }
+    }
+    const nextService = state.services.find((s) => s.id === nextValue);
+    const currentDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
+    if (nextService && isNightService(nextService) && employeeEntry && hasNextDayAbsenceOrWish(employeeEntry, currentDate)) {
+      showNotification('Kein Nachtdienst direkt vor Wunschfrei/Urlaub/Krankenstand erlaubt.', 'error');
+      e.target.value = previous;
+      return;
     }
     state.assignments[monthKey][emp][day] = nextValue;
     saveState();
@@ -4697,6 +4722,9 @@ function generateRoster() {
     // C10 maximal 1x pro Mitarbeiter
     if (isC10Service(service) && (c10Counts.get(emp.id) || 0) >= 1) return false;
 
+    // Kein Nachtdienst direkt vor Wunschfrei/Urlaub/Krankenstand
+    if (isNight && hasNextDayAbsenceOrWish(emp, currentDate)) return false;
+
     // Keine direkten D<->N-Wechsel
     if ((isNight && hadDayYesterday) || (!isNight && hadNightYesterday)) return false;
 
@@ -4872,6 +4900,90 @@ function generateRoster() {
         }
       }
     }
+  };
+
+  const weekendSchedule = (() => {
+    const schedule = [];
+    for (let day = 1; day <= days; day++) {
+      const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
+      if (date.getDay() === 6) {
+        const sunday = day + 1 <= days ? day + 1 : null;
+        schedule.push({ key: weekendKeyForDate(date), days: [day, sunday].filter(Boolean) });
+      }
+    }
+    return schedule;
+  })();
+
+  const weekendWorkCache = new Map();
+  const weekendWorkSet = (empId) => {
+    if (weekendWorkCache.has(empId)) return weekendWorkCache.get(empId);
+    const assignments = state.assignments[monthKey]?.[empId] || {};
+    const keys = new Set();
+    weekendSchedule.forEach((slot) => {
+      const hasWork = slot.days.some((d) => {
+        const sid = assignments[d];
+        if (!sid || sid === 'WUNSCHFREI') return false;
+        const svc = state.services.find((s) => s.id === sid);
+        return !!svc;
+      });
+      if (hasWork && slot.key) keys.add(slot.key);
+    });
+    weekendWorkCache.set(empId, keys);
+    return keys;
+  };
+
+  const moveAssignment = (fromEmp, toEmp, day, serviceId) => {
+    const service = state.services.find((s) => s.id === serviceId);
+    if (!service || serviceId === 'WUNSCHFREI') return false;
+    if (state.locks[monthKey]?.[fromEmp.id]?.[day]) return false;
+    if (state.locks[monthKey]?.[toEmp.id]?.[day]) return false;
+
+    const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
+    if (!canAssign(toEmp, day, service, { allowWeekendSolo: true, allowSplitPattern: true })) return false;
+
+    const donorAssignments = state.assignments[monthKey][fromEmp.id] || {};
+    const receiverAssignments = state.assignments[monthKey][toEmp.id] || {};
+    delete donorAssignments[day];
+    receiverAssignments[day] = serviceId;
+    state.assignments[monthKey][fromEmp.id] = donorAssignments;
+    state.assignments[monthKey][toEmp.id] = receiverAssignments;
+
+    if (isWeekend(date)) {
+      if (isC10Service(service)) {
+        c10Counts.set(fromEmp.id, Math.max(0, (c10Counts.get(fromEmp.id) || 0) - 1));
+        c10Counts.set(toEmp.id, (c10Counts.get(toEmp.id) || 0) + 1);
+      }
+      weekendSets.set(fromEmp.id, workedWeekendSet(monthKey, fromEmp.id));
+      weekendSets.set(toEmp.id, workedWeekendSet(monthKey, toEmp.id));
+      weekendWorkCache.delete(fromEmp.id);
+      weekendWorkCache.delete(toEmp.id);
+    }
+    return true;
+  };
+
+  const ensureWeekendFairness = () => {
+    const lacking = rotated.filter((emp) => weekendWorkSet(emp.id).size === 0);
+    if (!lacking.length) return;
+    const donors = rotated.filter((emp) => weekendWorkSet(emp.id).size > 1);
+    if (!donors.length) return;
+
+    lacking.forEach((target) => {
+      if (weekendWorkSet(target.id).size) return;
+      for (const slot of weekendSchedule) {
+        if (weekendWorkSet(target.id).size) break;
+        for (const donor of donors) {
+          if (weekendWorkSet(donor.id).size <= 1) continue;
+          const donorAssignments = state.assignments[monthKey][donor.id] || {};
+          for (const day of slot.days) {
+            const serviceId = donorAssignments[day];
+            if (!serviceId || serviceId === 'WUNSCHFREI') continue;
+            if (state.assignments[monthKey][target.id]?.[day]) continue;
+            if (moveAssignment(donor, target, day, serviceId)) break;
+          }
+          if (weekendWorkSet(target.id).size) break;
+        }
+      }
+    });
   };
 
   for (let day = 1; day <= days; day++) {
@@ -5080,7 +5192,10 @@ function generateRoster() {
   // 2. verbliebene Dienste füllen (unter Berücksichtigung von Stunden & Nachtregel)
   fillRemainingServices(currentMonth);
 
-  // 3. KI-Feinschliff (lokale Optimierung, Stunden weiter ausgleichen)
+  // 3. Wochenendfairness sicherstellen
+  ensureWeekendFairness();
+
+  // 4. KI-Feinschliff (lokale Optimierung, Stunden weiter ausgleichen)
   optimizeRosterLocally({
     monthKey,
     days,
@@ -5091,7 +5206,7 @@ function generateRoster() {
     totalHolidayRequirements,
   });
 
-  // 4. Offene Dienste dokumentieren
+  // 5. Offene Dienste dokumentieren
   const unplannedNotes = recordOpenServices();
   unplannedNotes.forEach((note) => appendLog('roster', note));
   if (unplannedNotes.length) {
