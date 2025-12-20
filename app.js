@@ -4690,6 +4690,17 @@ class RosterOptimizer {
     this.employees = state.employees.filter((e) => e.status === 'active');
   }
 
+  // 1. Prüfung, ob ein Mitarbeiter einen bestimmten Dienst technisch darf
+  canEmployeeDoService(empId, serviceId) {
+    const employee = this.state.employees.find((e) => e.id === empId);
+    const service = this.state.services.find((s) => s.id === serviceId);
+
+    if (!employee || !service) return false;
+
+    const func = this.state.functions.find((f) => f.id === employee.functionId);
+    return Array.isArray(func?.serviceIds) && func.serviceIds.includes(service.id);
+  }
+
   async run() {
     // Schritt 1: Initialer Zufallsplan (Alle benötigten Dienste besetzen)
     this.generateInitialPlan();
@@ -4724,9 +4735,15 @@ class RosterOptimizer {
     for (let d = 1; d <= this.daysInMonth; d++) {
       const required = this.getRequiredServicesForDay(d);
       required.forEach((sId) => {
-        const emp = this.employees[Math.floor(Math.random() * this.employees.length)];
-        if (!this.assignments[emp.id]) this.assignments[emp.id] = {};
-        this.assignments[emp.id][d] = sId;
+        const qualifiedEmps = this.employees.filter((emp) => this.canEmployeeDoService(emp.id, sId));
+
+        if (qualifiedEmps.length > 0) {
+          const emp = qualifiedEmps[Math.floor(Math.random() * qualifiedEmps.length)];
+          if (!this.assignments[emp.id]) this.assignments[emp.id] = {};
+          this.assignments[emp.id][d] = sId;
+        } else {
+          console.warn(`Kein qualifizierter Mitarbeiter für Dienst ${sId} an Tag ${d} gefunden!`);
+        }
       });
     }
   }
@@ -4748,35 +4765,60 @@ class RosterOptimizer {
   }
 
   calculateDelta(move) {
-    // Einfache Delta-Berechnung: Wie viele Strafpunkte haben sie vorher vs. nachher?
-    const oldScore = this.getEmpScore(move.empAId) + this.getEmpScore(move.empBId);
+    // Prüfe, ob der Tausch überhaupt erlaubt ist (Qualifikation)
+    const canA = move.valB ? this.canEmployeeDoService(move.empAId, move.valB) : true;
+    const canB = move.valA ? this.canEmployeeDoService(move.empBId, move.valA) : true;
 
-    // Tausch simulieren
-    const originalA = this.assignments[move.empAId]?.[move.day];
-    const originalB = this.assignments[move.empBId]?.[move.day];
+    if (!canA || !canB) {
+      return 999999; // Extrem hohe Strafe -> Tausch wird niemals akzeptiert
+    }
+
+    const scoreBefore = this.getEmpScore(move.empAId) + this.getEmpScore(move.empBId);
 
     this.updateAssignment(move.empAId, move.day, move.valB);
     this.updateAssignment(move.empBId, move.day, move.valA);
 
-    const newScore = this.getEmpScore(move.empAId) + this.getEmpScore(move.empBId);
+    const scoreAfter = this.getEmpScore(move.empAId) + this.getEmpScore(move.empBId);
 
-    // Tausch rückgängig machen für die Berechnung
-    this.updateAssignment(move.empAId, move.day, originalA);
-    this.updateAssignment(move.empBId, move.day, originalB);
+    // Zurücksetzen
+    this.updateAssignment(move.empAId, move.day, move.valA);
+    this.updateAssignment(move.empBId, move.day, move.valB);
 
-    return newScore - oldScore;
+    return scoreAfter - scoreBefore;
   }
 
-  // Hilfsmethode zur Penalty-Berechnung basierend auf deinen Gewichten
+  // Berechnet die Strafpunkte für einen Mitarbeiter basierend auf echten Daten
   getEmpScore(empId) {
     let penalty = 0;
-    const counts = this.getCounts(empId);
+    const assignments = this.assignments[empId] || {};
+    const days = Object.keys(assignments)
+      .map(Number)
+      .sort((a, b) => a - b);
 
-    // 1. Stunden-Differenz (Gewicht: 3.5)
-    penalty += Math.abs(counts.hours - 160) * 3.5;
+    // 1. Stunden-Bilanz (Gewicht: 3.5)
+    const totalHours = days.length * 12;
+    const targetHours = monthlyTargetHours(this.state.employees.find((e) => e.id === empId) || {}, this.monthDate) || 160;
+    penalty += Math.abs(totalHours - targetHours) * 3.5;
 
-    // 2. Nacht-Balance (Gewicht: 8)
-    if (counts.nights > 8) penalty += (counts.nights - 8) * 80;
+    // 2. Ruhezeiten & Nachtdienste (Gewicht: 8)
+    for (let i = 0; i < days.length; i++) {
+      const currentDay = days[i];
+      const nextDay = days[i + 1];
+
+      if (nextDay === currentDay + 1) {
+        const currentService = this.state.services.find((s) => s.id === assignments[currentDay]);
+        if (currentService?.isNight) {
+          penalty += 50 * 8; // Massive Strafe für verletzte Ruhezeit nach Nacht
+        }
+      }
+    }
+
+    // 3. Wochenend-Balance (Gewicht: 4.5)
+    const weekends = days.filter((d) => {
+      const date = new Date(this.monthDate.getFullYear(), this.monthDate.getMonth(), d);
+      return date.getDay() === 0 || date.getDay() === 6;
+    });
+    penalty += weekends.length * 4.5;
 
     return penalty;
   }
