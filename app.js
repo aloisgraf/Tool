@@ -4822,7 +4822,14 @@ class RosterOptimizer {
   canDo(empId, sId) {
     const emp = this.state.employees.find((e) => e.id === empId);
     const srv = this.state.services.find((s) => s.id === sId);
-    return emp && srv && emp.functions.includes(srv.functionId);
+
+    if (!emp || !srv) return false;
+    if (!emp.functions || !Array.isArray(emp.functions)) {
+      console.warn(`Mitarbeiter ${emp.name} hat keine Funktionen definiert!`);
+      return false;
+    }
+
+    return emp.functions.includes(srv.functionId);
   }
 
   proposeMove() {
