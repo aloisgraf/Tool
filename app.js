@@ -1326,6 +1326,17 @@ function showNotification(message, type = 'success') {
   setTimeout(() => toast.remove(), 3000);
 }
 
+function setButtonLoading(button, loading) {
+  if (!button) return;
+  if (loading) {
+    button.classList.add('loading');
+    button.disabled = true;
+  } else {
+    button.classList.remove('loading');
+    button.disabled = false;
+  }
+}
+
 function daysInMonth(date) {
   const year = date.getFullYear();
   const month = date.getMonth();
@@ -4690,6 +4701,7 @@ class RosterOptimizer {
     this.days = daysInMonth(monthDate);
     this.state = sourceState;
     this.rules = rules || {};
+    this.temperature = 1.0;
 
     this.scoreWeights = {
       hours: 4.5,
@@ -4733,6 +4745,10 @@ class RosterOptimizer {
     });
   }
 
+  calculateTotalScore() {
+    return this.computeScore(this.assignments);
+  }
+
   /**
    * Erstellt einen zufälligen, möglichst validen Startplan.
    */
@@ -4747,6 +4763,94 @@ class RosterOptimizer {
         }
       });
     }
+  }
+
+  generateRandomMove() {
+    const day = 1 + Math.floor(Math.random() * this.days);
+    const requirements = this.requirements.get(day) || [];
+    const assigned = this.employees
+      .map((emp) => {
+        const sid = (this.assignments.get(emp.id) || new Map()).get(day);
+        return sid ? { emp, sid } : null;
+      })
+      .filter(Boolean);
+
+    let serviceId = null;
+    let fromEmp = null;
+    const shuffled = shuffleArray(this.employees.slice());
+    const toEmp = shuffled.find((emp) => !!emp);
+    if (!toEmp) return null;
+
+    if (assigned.length) {
+      const pick = assigned[Math.floor(Math.random() * assigned.length)];
+      fromEmp = pick.emp;
+      serviceId = pick.sid;
+    } else if (requirements.length) {
+      const svc = requirements[Math.floor(Math.random() * requirements.length)];
+      serviceId = svc?.id || null;
+    }
+
+    if (!serviceId) return null;
+    if (fromEmp && toEmp.id === fromEmp.id) return null;
+    return { day, serviceId, from: fromEmp?.id || null, to: toEmp.id };
+  }
+
+  calculateScoreDelta(move) {
+    const base = this.calculateTotalScore();
+    const rollback = this.applyMove(move);
+    if (!rollback) return Infinity;
+    const next = this.calculateTotalScore();
+    rollback();
+    return next - base;
+  }
+
+  applyMove(move) {
+    if (!move) return null;
+    const { day, serviceId, from, to } = move;
+    const service = this.services.find((s) => s.id === serviceId);
+    const toEmp = this.employees.find((e) => e.id === to);
+    if (!service || !toEmp) return null;
+
+    if (!this.validateHard(toEmp, day, service)) return null;
+
+    const fromMap = from ? this.assignments.get(from) || new Map() : null;
+    const toMap = this.assignments.get(to) || new Map();
+    if (toMap.has(day)) return null;
+    const prevFrom = fromMap ? fromMap.get(day) : undefined;
+    const prevTo = toMap.get(day);
+
+    if (fromMap) {
+      fromMap.delete(day);
+      this.assignments.set(from, fromMap);
+    }
+
+    toMap.set(day, serviceId);
+    this.assignments.set(to, toMap);
+    this.recalculateC10Count(from);
+    this.recalculateC10Count(to);
+
+    return () => {
+      toMap.delete(day);
+      if (fromMap && prevFrom) {
+        fromMap.set(day, prevFrom);
+        this.assignments.set(from, fromMap);
+      }
+      if (prevTo) {
+        toMap.set(day, prevTo);
+      }
+      this.recalculateC10Count(from);
+      this.recalculateC10Count(to);
+    };
+  }
+
+  recalculateC10Count(empId) {
+    if (!empId) return;
+    const entries = this.assignments.get(empId) || new Map();
+    const count = Array.from(entries.values()).reduce((sum, sid) => {
+      const svc = this.services.find((s) => s.id === sid);
+      return sum + (isC10Service(svc) ? 1 : 0);
+    }, 0);
+    this.c10Counts.set(empId, count);
   }
 
   /**
@@ -4953,44 +5057,30 @@ class RosterOptimizer {
    * Optimiert den Plan asynchron und gibt das beste Ergebnis zurück.
    * @returns {Promise<{ assignments: Record<string, Record<number, string>> }>}
    */
-  async optimize() {
+  async optimize(iterations = 1000) {
     this.buildInitialPlan();
     this.swapCount = 0;
-    let bestPlan = this.clonePlan(this.assignments);
-    let bestScore = this.computeScore(bestPlan);
-    let temperature = 1.0;
-    const maxIter = 3000;
-    const chunk = 200;
+    this.temperature = 1.0;
+    let currentScore = this.calculateTotalScore();
 
-    for (let iter = 0; iter < maxIter; iter++) {
-      const rollback = this.randomMove();
-      if (!rollback) {
-        if (iter % chunk === 0) await wait();
-        continue;
-      }
+    for (let i = 0; i < iterations; i++) {
+      const move = this.generateRandomMove();
+      const delta = this.calculateScoreDelta(move);
 
-      const nextScore = this.computeScore(this.assignments);
-      const delta = nextScore - bestScore;
-      const accept = delta < 0 || Math.exp(-delta / Math.max(0.001, temperature)) > Math.random();
-
-      if (accept) {
-        this.swapCount += 1;
-        if (nextScore < bestScore) {
-          bestScore = nextScore;
-          bestPlan = this.clonePlan(this.assignments);
+      if (delta < 0 || Math.random() < Math.exp(-delta / Math.max(0.001, this.temperature))) {
+        const applied = this.applyMove(move);
+        if (applied) {
+          this.swapCount += 1;
+          currentScore += delta;
         }
-      } else {
-        rollback();
       }
 
-      temperature *= 0.995;
-      if (iter % chunk === 0) await wait();
+      if (i % 100 === 0) await wait(0);
+      this.temperature *= 0.995;
     }
 
-    this.assignments = bestPlan;
-    const finalDetails = this.evaluatePlan(bestPlan);
-    this.lastScoreDetails = finalDetails;
-    return { assignments: this.toStateAssignments(bestPlan), scoreDetails: finalDetails, weights: this.scoreWeights, swapCount: this.swapCount };
+    this.lastScoreDetails = this.evaluatePlan(this.assignments);
+    return this.assignments;
   }
 }
 
@@ -5084,36 +5174,61 @@ function shuffleArray(arr) {
 }
 
 async function generatePlanSmart() {
+  if (!canEditRoster()) {
+    showNotification('Keine Berechtigung zum Generieren', 'error');
+    return;
+  }
+
+  showNotification('Generierung gestartet...', 'info');
+  setButtonLoading(generateBtn, true);
   const optimizer = new RosterOptimizer(currentMonth, { state, rules: state.rules });
-  const result = await optimizer.optimize();
-  const monthKey = getMonthKey(currentMonth);
-  state.assignments[monthKey] = result.assignments;
 
-  const days = daysInMonth(currentMonth);
-  const employees = getOrderedEmployees();
-  const allowedWorkedWeekends = Math.max(0, Math.ceil(days / 7) - (state.rules?.minFreeWeekends || 0));
-  const totalNightReq = totalNightRequirements(currentMonth);
-  const totalHolidayReq = totalHolidayRequirements(currentMonth);
-  const metrics = collectPlanMetrics(monthKey, days, employees, allowedWorkedWeekends, totalNightReq, totalHolidayReq);
-  const perEmployee = Array.from(result.scoreDetails?.perEmployee || []).map(([empId, score]) => {
-    const emp = employees.find((e) => e.id === empId) || {};
-    return { empId, name: formatName(emp), score };
-  });
-  recordOptimizerHistory({
-    monthKey,
-    cost: result.scoreDetails?.total,
-    metrics,
-    weights: result.weights,
-    perEmployee,
-    swapCount: result.swapCount || 0,
-    note: 'Penalty Score gespeichert',
-    timestamp: Date.now(),
-  });
+  try {
+    const result = await optimizer.optimize(2000);
+    const planMap = result instanceof Map ? result : result?.plan || result?.assignments || optimizer.assignments;
+    const monthKey = getMonthKey(currentMonth);
+    state.assignments[monthKey] = {};
 
-  appendLog('roster', 'Neuer Plan via RosterOptimizer generiert.');
-  saveState();
-  renderScoreHistory();
-  renderRoster();
+    if (planMap instanceof Map) {
+      planMap.forEach((map, empId) => {
+        state.assignments[monthKey][empId] = Object.fromEntries(map);
+      });
+    }
+
+    const days = daysInMonth(currentMonth);
+    const employees = getOrderedEmployees();
+    const allowedWorkedWeekends = Math.max(0, Math.ceil(days / 7) - (state.rules?.minFreeWeekends || 0));
+    const totalNightReq = totalNightRequirements(currentMonth);
+    const totalHolidayReq = totalHolidayRequirements(currentMonth);
+    const scoreDetails = optimizer.lastScoreDetails;
+    const metrics = collectPlanMetrics(monthKey, days, employees, allowedWorkedWeekends, totalNightReq, totalHolidayReq);
+    const perEmployee = Array.from(scoreDetails?.perEmployee || []).map(([empId, score]) => {
+      const emp = employees.find((e) => e.id === empId) || {};
+      return { empId, name: formatName(emp), score };
+    });
+
+    recordOptimizerHistory({
+      monthKey,
+      cost: scoreDetails?.total,
+      metrics,
+      weights: optimizer.scoreWeights,
+      perEmployee,
+      swapCount: optimizer.swapCount || 0,
+      note: 'Penalty Score gespeichert',
+      timestamp: Date.now(),
+    });
+
+    appendLog('roster', 'Neuer Plan via RosterOptimizer generiert.');
+    saveState();
+    renderScoreHistory();
+    renderRoster();
+    showNotification('Dienstplan erfolgreich generiert!', 'success');
+  } catch (err) {
+    console.error(err);
+    showNotification('Fehler bei der Generierung', 'error');
+  } finally {
+    setButtonLoading(generateBtn, false);
+  }
 }
 
 async function generateRoster() {
@@ -5702,14 +5817,9 @@ function wireEvents() {
       }
     });
   }
-  on(generateBtn, 'click', async () => {
-    if (!canEditRoster()) {
-      showNotification('Keine Berechtigung zum Generieren', 'error');
-      return;
-    }
+  on(generateBtn, 'click', () => {
     if (confirm('Dienstplan automatisch generieren?')) {
-      await generateRoster();
-      showNotification('Dienstplan erfolgreich generiert', 'success');
+      generatePlanSmart();
     }
   });
   on(clearBtn, 'click', () => {

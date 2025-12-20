@@ -136,6 +136,26 @@ button {
   cursor: pointer;
   transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
 }
+.loading {
+  position: relative;
+  pointer-events: none;
+  opacity: 0.85;
+}
+.loading::after {
+  content: '';
+  position: absolute;
+  right: .65rem;
+  top: 50%;
+  width: 1em;
+  height: 1em;
+  margin-top: -.5em;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+.loading.button-wide { padding-right: 2.2rem; }
+.light-theme .loading { opacity: 0.9; }
 button:hover { background: #1f2937; }
 .light-theme button:hover { background: #e2e8f0; color: #0f172a; }
 button:active { transform: translateY(1px); }
@@ -1254,6 +1274,11 @@ textarea { resize: vertical; font: inherit; }
 
 .mission-controls label {
   min-width: 260px;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .roster-panel[data-mode='view'] select,
