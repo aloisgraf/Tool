@@ -418,6 +418,7 @@ const ticketReporterEmailInput = document.getElementById('ticketReporterEmail');
 const ticketAreaInput = document.getElementById('ticketArea');
 const ticketStatusFilter = document.getElementById('ticketStatusFilter');
 const ticketList = document.getElementById('ticketList');
+const scoreHistoryTable = document.getElementById('scoreHistoryTable');
 const planningSettings = document.getElementById('planningSettings');
 const adminSettings = document.getElementById('adminSettings');
 const overviewApprovals = document.getElementById('overviewApprovals');
@@ -637,16 +638,18 @@ function saveOptimizerProfile(profile) {
   localStorage.setItem(STORAGE_KEYS.optimizer, JSON.stringify(profile || { history: [] }));
 }
 
+const BASE_SCORE_WEIGHTS = {
+  monthlyTargetDiff: 3.5,
+  shortTermBalance: 6,
+  nightBalance: 8,
+  weekendBalance: 4.5,
+  holidayBalance: 6,
+  qualificationScarcity: 7.5,
+  randomNoise: 0.5,
+};
+
 function deriveDynamicWeights(profile) {
-  const baseWeights = {
-    monthlyTargetDiff: 3.5,
-    shortTermBalance: 6,
-    nightBalance: 8,
-    weekendBalance: 4.5,
-    holidayBalance: 6,
-    qualificationScarcity: 7.5,
-    randomNoise: 0.5,
-  };
+  const baseWeights = BASE_SCORE_WEIGHTS;
   const history = Array.isArray(profile?.history) ? profile.history.slice(-6) : [];
   if (!history.length) return baseWeights;
 
@@ -665,6 +668,16 @@ function deriveDynamicWeights(profile) {
     nightBalance: baseWeights.nightBalance * (1 + clamp(nightVariance, 0, 3) * 0.25),
     shortTermBalance: baseWeights.shortTermBalance * (1 + clamp(isolation, 0, 3) * 0.2),
   };
+}
+
+function computeWeightAdjustments(weights = {}) {
+  const adjustments = {};
+  Object.entries(BASE_SCORE_WEIGHTS).forEach(([key, base]) => {
+    const used = Number(weights[key]) || 0;
+    const delta = used - base;
+    adjustments[key] = { base, used, delta };
+  });
+  return adjustments;
 }
 
 function sanitizeGroups(groups = []) {
@@ -1249,6 +1262,14 @@ function getMonthKey(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 }
 
+function formatMonthKeyLabel(monthKey) {
+  if (!monthKey || typeof monthKey !== 'string') return monthKey || '';
+  const [year, month] = monthKey.split('-').map((v) => Number(v));
+  if (!Number.isFinite(year) || !Number.isFinite(month)) return monthKey;
+  const date = new Date(year, month - 1, 1);
+  return date.toLocaleDateString('de-AT', { month: 'long', year: 'numeric' });
+}
+
 function monthKeyToDate(key) {
   if (typeof key !== 'string') return null;
   const [yearStr, monthStr] = key.split('-');
@@ -1492,6 +1513,14 @@ function formatShortDate(value) {
   const date = parseISODate(value);
   if (!date) return '';
   return date.toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+function formatDateTime(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: 'numeric' }) +
+    ' · ' +
+    date.toLocaleTimeString('de-AT', { hour: '2-digit', minute: '2-digit' });
 }
 
 function isVacationApproved(entry) {
@@ -3185,6 +3214,64 @@ function changeYearOverview(delta) {
   renderYearOverview();
 }
 
+function renderScoreHistory() {
+  if (!scoreHistoryTable || !currentUser?.permissions?.admin) return;
+  const tbody = scoreHistoryTable.querySelector('tbody');
+  const profile = loadOptimizerProfile();
+  const history = Array.isArray(profile.history)
+    ? [...profile.history].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+    : [];
+
+  if (!history.length) {
+    if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="muted">Noch keine Dienstpläne bewertet.</td></tr>';
+    return;
+  }
+
+  const rows = history
+    .map((entry) => {
+      const metrics = entry.metrics || {};
+      const weights = entry.weights || BASE_SCORE_WEIGHTS;
+      const adjustments = entry.adjustments || computeWeightAdjustments(weights);
+      const adjustedKeys = Object.values(adjustments || {}).filter((a) => Math.abs(a.delta) > 0.01);
+      const note = entry.note || (adjustedKeys.length ? 'Lernanpassung aktiv' : 'Basisgewichte genutzt');
+      const monthLabel = formatMonthKeyLabel(entry.monthKey) || entry.monthKey || '-';
+      const cost = Number.isFinite(entry.cost) ? entry.cost.toFixed(1) : '-';
+      const metricBadges = `
+        <div class="metric-tags">
+          <span class="pill small">Stunden σ²: ${(metrics.hourVariance ?? 0).toFixed(3)}</span>
+          <span class="pill small">Nächte σ²: ${(metrics.nightVariance ?? 0).toFixed(3)}</span>
+          <span class="pill small">Wochenenden σ²: ${(metrics.weekendVariance ?? 0).toFixed(3)}</span>
+          <span class="pill small">Feiertage σ²: ${(metrics.holidayVariance ?? 0).toFixed(3)}</span>
+          <span class="pill small">Inseln: ${(metrics.isolationPenalty ?? 0).toFixed(3)}</span>
+        </div>`;
+      const weightTags = Object.keys(BASE_SCORE_WEIGHTS)
+        .map((key) => {
+          const adj = adjustments?.[key];
+          const deltaText = adj && Math.abs(adj.delta) > 0.01 ? ` (Δ ${adj.delta.toFixed(2)})` : '';
+          return `<span class="pill small">${key}: ${(weights[key] ?? BASE_SCORE_WEIGHTS[key]).toFixed(2)}${deltaText}</span>`;
+        })
+        .join('');
+      const adjustmentText = adjustedKeys.length
+        ? adjustedKeys.map((a) => `${a.delta > 0 ? '+' : ''}${a.delta.toFixed(2)}`).join(', ')
+        : 'Keine Anpassung';
+      const timestamp = entry.timestamp ? formatDateTime(entry.timestamp) : '';
+      return `
+        <tr>
+          <td>${escapeHtml(monthLabel)}</td>
+          <td>${escapeHtml(cost)}</td>
+          <td>${metricBadges}</td>
+          <td><div class="metric-tags">${weightTags}</div></td>
+          <td><div class="metric-tags"><span class="pill small">${escapeHtml(note)}</span><span class="pill small muted">${escapeHtml(
+        adjustmentText
+      )}</span></div></td>
+          <td>${escapeHtml(timestamp)}</td>
+        </tr>`;
+    })
+    .join('');
+
+  if (tbody) tbody.innerHTML = rows;
+}
+
 function handleTicketCardChange(event) {
   const checkbox = event.target.closest('input[data-ticket-notify]');
   if (!checkbox) return;
@@ -3871,6 +3958,8 @@ function showScreen(target) {
     renderOverview();
   } else if (target === 'yearOverview') {
     renderYearOverview();
+  } else if (target === 'scoreHistory') {
+    renderScoreHistory();
   }
 }
 
@@ -5414,9 +5503,22 @@ function generateRoster() {
     totalNightRequirements,
     totalHolidayRequirements
   );
+  const weightAdjustments = computeWeightAdjustments(scoreWeights);
+  const learningApplied = Object.values(weightAdjustments).some((entry) => Math.abs(entry.delta) > 0.01);
+  const learningNote = learningApplied ? 'Gewichte aus Verlauf angepasst' : 'Basisgewichte genutzt';
   const history = Array.isArray(optimizerProfile.history) ? optimizerProfile.history.slice(-19) : [];
-  history.push({ monthKey, cost: finalCost, metrics: optimizerMetrics, timestamp: Date.now() });
+  history.push({
+    monthKey,
+    cost: finalCost,
+    metrics: optimizerMetrics,
+    timestamp: Date.now(),
+    weights: scoreWeights,
+    adjustments: weightAdjustments,
+    learningApplied,
+    note: learningNote,
+  });
   saveOptimizerProfile({ history });
+  renderScoreHistory();
 
   const label = currentMonth.toLocaleDateString('de-AT', { month: 'long', year: 'numeric' });
   state.layout.generatorPivot = rotated.length ? (pivot + 1) % rotated.length : 0;

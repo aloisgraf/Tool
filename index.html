@@ -43,6 +43,7 @@
           <div class="menu-group__items">
             <button type="button" data-target="overview" class="active">Übersicht</button>
             <button type="button" data-target="yearOverview" data-permission="admin">Jahresübersicht</button>
+            <button type="button" data-target="scoreHistory" data-permission="admin">Score</button>
           </div>
         </div>
       </details>
@@ -682,6 +683,31 @@
                   <th>Offene Urlaubstage</th>
                   <th>Krankenstandstage</th>
                   <th>Pflegeurlaubstage</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+      <section class="panel admin" data-screen="scoreHistory" data-permission="admin" hidden>
+        <div class="panel__header">
+          <div>
+            <p class="eyebrow">Optimierung</p>
+            <h2>Score-Verlauf</h2>
+          </div>
+        </div>
+        <div class="admin-panel">
+          <div class="table-wrapper simple">
+            <table id="scoreHistoryTable" class="score-table">
+              <thead>
+                <tr>
+                  <th>Monat</th>
+                  <th>Score</th>
+                  <th>Metriken</th>
+                  <th>Gewichte</th>
+                  <th>Lernhinweis</th>
+                  <th>Erstellt</th>
                 </tr>
               </thead>
               <tbody></tbody>
