@@ -424,6 +424,10 @@ const overviewVacations = document.getElementById('overviewVacations');
 const overviewMyTickets = document.getElementById('overviewMyTickets');
 const overviewAssigned = document.getElementById('overviewAssigned');
 const overviewAssignedBlock = document.getElementById('overviewAssignedBlock');
+const yearOverviewTable = document.getElementById('yearOverviewTable');
+const yearOverviewLabel = document.getElementById('yearOverviewLabel');
+const yearOverviewPrev = document.getElementById('yearOverviewPrev');
+const yearOverviewNext = document.getElementById('yearOverviewNext');
 const missionServiceUrlInput = document.getElementById('missionServiceUrl');
 const missionSaveBtn = document.getElementById('missionSave');
 const missionRefreshBtn = document.getElementById('missionRefresh');
@@ -948,7 +952,10 @@ function ensureLayout(layout, employees) {
     if (!order.includes(id)) order.push(id);
   });
   const generatorPivot = Number.isFinite(layout.generatorPivot) ? layout.generatorPivot : 0;
-  return { order, generatorPivot };
+  const yearOverviewYear = Number.isFinite(layout.yearOverviewYear)
+    ? layout.yearOverviewYear
+    : new Date().getFullYear();
+  return { order, generatorPivot, yearOverviewYear };
 }
 
 function ensureLogs(logs = DEFAULT_LOGS) {
@@ -1473,6 +1480,34 @@ function findSickOnDate(emp, date) {
     const finish = start <= end ? end : start;
     return date >= begin && date <= finish;
   });
+}
+
+function assignmentForDate(emp, date) {
+  if (!emp || !date) return null;
+  const monthKey = getMonthKey(date);
+  return state.assignments?.[monthKey]?.[emp.id]?.[date.getDate()] || null;
+}
+
+function isWorkingAssignment(emp, date) {
+  const serviceId = assignmentForDate(emp, date);
+  if (!serviceId || serviceId === 'WUNSCHFREI') return false;
+  const service = state.services.find((s) => s.id === serviceId);
+  return !!service;
+}
+
+function absenceDaysByKind(emp, kind, year) {
+  if (!emp?.sickLeaves?.length) return 0;
+  return emp.sickLeaves
+    .filter((entry) => entry.kind === kind)
+    .reduce((sum, entry) => {
+      return (
+        sum +
+        expandDateRange(entry.start, entry.end).filter((iso) => {
+          const date = parseISODate(iso);
+          return date && date.getFullYear() === year;
+        }).length
+      );
+    }, 0);
 }
 
 function isEmployeeActiveOnDate(emp, date) {
@@ -3003,6 +3038,110 @@ function renderOverview() {
           .join('')
       : '<p class="muted">Keine übernommenen Tickets.</p>';
   }
+
+  renderYearOverview();
+}
+
+function weekendDistributionForEmployee(emp, year) {
+  let worked = 0;
+  let free = 0;
+  for (let month = 0; month < 12; month++) {
+    const days = daysInMonth(new Date(year, month, 1));
+    for (let day = 1; day <= days; day++) {
+      const date = new Date(year, month, day);
+      if (date.getDay() !== 6) continue;
+      const saturday = date;
+      const sunday = new Date(year, month, day + 1);
+      const satActive = isEmployeeActiveOnDate(emp, saturday);
+      const sunActive = isEmployeeActiveOnDate(emp, sunday);
+      if (!satActive && !sunActive) continue;
+      const satWork = satActive && isWorkingAssignment(emp, saturday);
+      const sunWork = sunActive && isWorkingAssignment(emp, sunday);
+      const satAbsence =
+        satActive &&
+        (assignmentForDate(emp, saturday) === 'WUNSCHFREI' ||
+          !!findVacationOnDate(emp, saturday) ||
+          !!findSickOnDate(emp, saturday));
+      const sunAbsence =
+        sunActive &&
+        (assignmentForDate(emp, sunday) === 'WUNSCHFREI' ||
+          !!findVacationOnDate(emp, sunday) ||
+          !!findSickOnDate(emp, sunday));
+      const hasWork = satWork || sunWork;
+      const considered = satActive || sunActive;
+      if (hasWork) worked++;
+      else if (considered) free++;
+    }
+  }
+  return { worked, free };
+}
+
+function annualEmployeeStats(emp, year) {
+  const stats = {
+    nights: 0,
+    holidayShifts: 0,
+    weekendFree: 0,
+    weekendWorked: 0,
+    vacationUsed: vacationUsageByYear(emp)[year] || 0,
+    vacationOpen: remainingVacationDays(emp, year),
+    sickDays: absenceDaysByKind(emp, 'sick', year),
+    careDays: absenceDaysByKind(emp, 'care', year) + absenceDaysByKind(emp, 'care2', year),
+  };
+  for (let month = 0; month < 12; month++) {
+    const monthDate = new Date(year, month, 1);
+    const monthKey = getMonthKey(monthDate);
+    const assignments = state.assignments[monthKey]?.[emp.id] || {};
+    Object.entries(assignments).forEach(([dayStr, serviceId]) => {
+      const day = Number(dayStr);
+      const date = new Date(year, month, day);
+      if (!isEmployeeActiveOnDate(emp, date)) return;
+      const service = state.services.find((s) => s.id === serviceId);
+      if (!service) return;
+      if (isNightService(service)) stats.nights += 1;
+      if (isHoliday(date) || date.getDay() === 0) stats.holidayShifts += 1;
+    });
+  }
+  const weekend = weekendDistributionForEmployee(emp, year);
+  stats.weekendFree = weekend.free;
+  stats.weekendWorked = weekend.worked;
+  return stats;
+}
+
+function renderYearOverview() {
+  if (!yearOverviewTable || !currentUser?.permissions?.admin) return;
+  const year = Number(state.layout?.yearOverviewYear) || currentMonth.getFullYear();
+  if (yearOverviewLabel) yearOverviewLabel.textContent = String(year);
+  const tbody = yearOverviewTable.querySelector('tbody');
+  const employees = state.employees.filter((emp) => emp.status !== 'exited');
+  if (!employees.length) {
+    if (tbody) tbody.innerHTML = '<tr><td colspan="9" class="muted">Keine Mitarbeiter vorhanden.</td></tr>';
+    return;
+  }
+  const rows = employees
+    .map((emp) => {
+      const stats = annualEmployeeStats(emp, year);
+      return `
+        <tr>
+          <td>${escapeHtml(formatName(emp))}</td>
+          <td>${stats.nights}</td>
+          <td>${stats.holidayShifts}</td>
+          <td>${stats.weekendFree}</td>
+          <td>${stats.weekendWorked}</td>
+          <td>${stats.vacationUsed}</td>
+          <td>${stats.vacationOpen}</td>
+          <td>${stats.sickDays}</td>
+          <td>${stats.careDays}</td>
+        </tr>`;
+    })
+    .join('');
+  if (tbody) tbody.innerHTML = rows;
+}
+
+function changeYearOverview(delta) {
+  const base = Number(state.layout?.yearOverviewYear) || currentMonth.getFullYear();
+  state.layout.yearOverviewYear = base + delta;
+  saveState();
+  renderYearOverview();
 }
 
 function handleTicketCardChange(event) {
@@ -3689,6 +3828,8 @@ function showScreen(target) {
     renderMissionBoard();
   } else if (target === 'overview') {
     renderOverview();
+  } else if (target === 'yearOverview') {
+    renderYearOverview();
   }
 }
 
@@ -5703,6 +5844,8 @@ function wireEvents() {
   on(servicePicker, 'change', handleServicePickerChange);
   on(functionPicker, 'change', handleFunctionPickerChange);
   on(employmentPicker, 'change', handleEmploymentPickerChange);
+  on(yearOverviewPrev, 'click', () => changeYearOverview(-1));
+  on(yearOverviewNext, 'click', () => changeYearOverview(1));
   on(prevMonthBtn, 'click', () => {
     currentMonth.setMonth(currentMonth.getMonth() - 1);
     renderRoster();
