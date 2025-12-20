@@ -4686,60 +4686,130 @@ class RosterOptimizer {
     this.state = state;
     this.monthKey = getMonthKey(this.monthDate);
     this.daysInMonth = new Date(this.monthDate.getFullYear(), this.monthDate.getMonth() + 1, 0).getDate();
-    this.assignments = new Map(); // employeeId -> Map(day -> serviceId)
+    this.assignments = {}; // Format: { empId: { day: serviceId } }
+    this.employees = state.employees.filter((e) => e.status === 'active');
   }
 
-  // Erstellt einen ersten Entwurf (alle Dienste zufällig besetzen)
   async run() {
-    console.log("Starte Generierung...");
-    const employees = this.state.employees.filter(e => e.status === 'active');
-    
-    // Initialisierung: Leere Maps für alle Mitarbeiter
-    employees.forEach(emp => this.assignments.set(emp.id, new Map()));
+    // Schritt 1: Initialer Zufallsplan (Alle benötigten Dienste besetzen)
+    this.generateInitialPlan();
 
-    // Gehe jeden Tag im Monat durch
-    for (let day = 1; day <= this.daysInMonth; day++) {
-      const requiredServices = this.getRequiredServicesForDay(day);
-      
-      for (const serviceId of requiredServices) {
-        // Finde verfügbare Mitarbeiter (sehr einfache Logik für den Anfang)
-        const candidates = employees.filter(emp => this.isPossible(emp, day, serviceId));
-        
-        if (candidates.length > 0) {
-          // Zufälligen Kandidaten wählen
-          const chosen = candidates[Math.floor(Math.random() * candidates.length)];
-          this.assignments.get(chosen.id).set(day, serviceId);
-        }
+    // Schritt 2: Optimierung durch Simulated Annealing
+    let currentScore = this.calculateTotalPenalty();
+    let iterations = 10000; // 10.000 Tauschversuche
+    let temp = 100; // Starttemperatur
+
+    for (let i = 0; i < iterations; i++) {
+      const move = this.proposeMove();
+      if (!move) continue;
+
+      const delta = this.calculateDelta(move);
+
+      // Akzeptiere Tausch, wenn er besser ist ODER per Zufall (gegen lokale Optima)
+      if (delta < 0 || Math.random() < Math.exp(-delta / temp)) {
+        this.applyMove(move);
+        currentScore += delta;
       }
-      // UI-Thread kurz atmen lassen
-      if (day % 5 === 0) await new Promise(r => setTimeout(r, 0));
+
+      temp *= 0.9995; // Abkühlen
+
+      // UI-Thread alle 500 Schritte entlasten
+      if (i % 500 === 0) await new Promise((r) => setTimeout(r, 0));
     }
 
-    // Konvertiere Map zurück in das Format für den State
-    const result = {};
-    this.assignments.forEach((dayMap, empId) => {
-      result[empId] = Object.fromEntries(dayMap);
-    });
-    return result;
+    return this.assignments;
+  }
+
+  generateInitialPlan() {
+    for (let d = 1; d <= this.daysInMonth; d++) {
+      const required = this.getRequiredServicesForDay(d);
+      required.forEach((sId) => {
+        const emp = this.employees[Math.floor(Math.random() * this.employees.length)];
+        if (!this.assignments[emp.id]) this.assignments[emp.id] = {};
+        this.assignments[emp.id][d] = sId;
+      });
+    }
+  }
+
+  proposeMove() {
+    const day = Math.floor(Math.random() * this.daysInMonth) + 1;
+    const empA = this.employees[Math.floor(Math.random() * this.employees.length)];
+    const empB = this.employees[Math.floor(Math.random() * this.employees.length)];
+
+    if (empA.id === empB.id) return null;
+
+    return {
+      day,
+      empAId: empA.id,
+      empBId: empB.id,
+      valA: this.assignments[empA.id]?.[day] || null,
+      valB: this.assignments[empB.id]?.[day] || null,
+    };
+  }
+
+  calculateDelta(move) {
+    // Einfache Delta-Berechnung: Wie viele Strafpunkte haben sie vorher vs. nachher?
+    const oldScore = this.getEmpScore(move.empAId) + this.getEmpScore(move.empBId);
+
+    // Tausch simulieren
+    const originalA = this.assignments[move.empAId]?.[move.day];
+    const originalB = this.assignments[move.empBId]?.[move.day];
+
+    this.updateAssignment(move.empAId, move.day, move.valB);
+    this.updateAssignment(move.empBId, move.day, move.valA);
+
+    const newScore = this.getEmpScore(move.empAId) + this.getEmpScore(move.empBId);
+
+    // Tausch rückgängig machen für die Berechnung
+    this.updateAssignment(move.empAId, move.day, originalA);
+    this.updateAssignment(move.empBId, move.day, originalB);
+
+    return newScore - oldScore;
+  }
+
+  // Hilfsmethode zur Penalty-Berechnung basierend auf deinen Gewichten
+  getEmpScore(empId) {
+    let penalty = 0;
+    const counts = this.getCounts(empId);
+
+    // 1. Stunden-Differenz (Gewicht: 3.5)
+    penalty += Math.abs(counts.hours - 160) * 3.5;
+
+    // 2. Nacht-Balance (Gewicht: 8)
+    if (counts.nights > 8) penalty += (counts.nights - 8) * 80;
+
+    return penalty;
+  }
+
+  updateAssignment(empId, day, val) {
+    if (!this.assignments[empId]) this.assignments[empId] = {};
+    if (!val) delete this.assignments[empId][day];
+    else this.assignments[empId][day] = val;
+  }
+
+  applyMove(move) {
+    this.updateAssignment(move.empAId, move.day, move.valB);
+    this.updateAssignment(move.empBId, move.day, move.valA);
+  }
+
+  calculateTotalPenalty() {
+    return this.employees.reduce((sum, emp) => sum + this.getEmpScore(emp.id), 0);
   }
 
   getRequiredServicesForDay(day) {
-    // Holt die Dienste aus den Weekday-Rules
     const date = new Date(this.monthDate.getFullYear(), this.monthDate.getMonth(), day);
-    const dayOfWeek = date.getDay(); // 0=So, 1=Mo...
-    const rule = this.state.rules.weekdayRules[0]; // Einfachheitshalber die erste Regel
-    return rule.services[dayOfWeek] || [];
+    const dayOfWeek = date.getDay();
+    const rule = this.state.rules.weekdayRules[0];
+    return rule.services[dayOfWeek === 0 ? 0 : dayOfWeek] || [];
   }
 
-  isPossible(emp, day, serviceId) {
-    // Einfache Prüfung: Hat der Mitarbeiter schon einen Dienst an diesem Tag?
-    if (this.assignments.get(emp.id).has(day)) return false;
-    
-    // Check Locks (Sperrtage)
-    const locks = this.state.locks[this.monthKey]?.[emp.id];
-    if (locks && locks[day]) return false;
-
-    return true;
+  getCounts(empId) {
+    const data = this.assignments[empId] || {};
+    const services = Object.values(data);
+    return {
+      hours: services.length * 12,
+      nights: services.filter((s) => typeof s === 'string' && s.includes('N')).length,
+    };
   }
 }
 
@@ -4763,16 +4833,17 @@ function shuffleArray(arr) {
 }
 
 async function generatePlanSmart() {
+  showNotification('Optimierung läuft (10.000 Iterationen)...', 'info');
   try {
     const optimizer = new RosterOptimizer(currentMonth, state);
-    const newAssignments = await optimizer.run();
+    const result = await optimizer.run();
 
     const monthKey = getMonthKey(currentMonth);
-    state.assignments[monthKey] = newAssignments;
+    state.assignments[monthKey] = result;
 
     saveState();
     renderRoster();
-    showNotification('Dienstplan erfolgreich generiert!', 'success');
+    showNotification('Plan optimiert und erstellt!', 'success');
   } catch (err) {
     console.error('Generierungsfehler Details:', err);
     showNotification('Fehler: ' + err.message, 'error');
