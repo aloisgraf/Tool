@@ -4634,897 +4634,416 @@ function countStreakForMonth(empId, day, predicate, monthKey) {
   return streak;
 }
 
-function generateRoster() {
-  const monthKey = getMonthKey(currentMonth);
-  ensureMonthMaps(monthKey);
-  const days = daysInMonth(currentMonth);
-  // === C10 Reservierung vorab ===
-  const c10Counts = new Map();
-  const c10 = state.services.find((s) => s.name.trim().toUpperCase() === 'C10');
+/**
+ * Lightweight delay helper to chunk async optimizer passes.
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
+function wait(ms = 0) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-  if (c10) {
-    for (let day = 1; day <= days; day++) {
-      const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
-      if (!getRequiredServicesForDate(date).some((s) => s.id === c10.id)) continue;
+/**
+ * Optimiert die Dienstplanung mithilfe eines Simulated-Annealing-Ansatzes.
+ * Hard-Constraints werden strikt geprüft, Soft-Constraints fließen in den Score ein.
+ */
+class RosterOptimizer {
+  /**
+   * @param {Date} monthDate
+   * @param {{ state: any, rules: any }} params
+   */
+  constructor(monthDate, { state: sourceState, rules }) {
+    this.monthDate = monthDate;
+    this.monthKey = getMonthKey(monthDate);
+    this.days = daysInMonth(monthDate);
+    this.state = sourceState;
+    this.rules = rules || {};
 
-      // Beste Person suchen, die noch keinen C10 hatte
-      const emp = getOrderedEmployees().find((e) => {
-        if (!isEmployeeActiveOnDate(e, date)) return false;
-        if (!employeeAllowedForService(e, c10)) return false;
-        if (isDayAfterNight(e, date)) return false; // WICHTIG: kein C10 am Tag nach Nacht!
-        return (c10Counts.get(e.id) || 0) < 1;
-      });
+    this.employees = (sourceState.employees || []).slice();
+    this.services = (sourceState.services || []).slice();
+    this.assignments = new Map();
+    this.c10Counts = new Map();
 
-      if (emp) {
-        if (!state.assignments[monthKey][emp.id]) {
-          state.assignments[monthKey][emp.id] = {};
+    this.requirements = new Map();
+    this.weekendMap = new Map();
+    this.nightPoolSize = Math.max(1, this.employees.filter((e) => e.nightAllowed).length);
+    this.buildCaches();
+  }
+
+  buildCaches() {
+    ensureMonthMaps(this.monthKey);
+    for (let day = 1; day <= this.days; day++) {
+      const date = new Date(this.monthDate.getFullYear(), this.monthDate.getMonth(), day);
+      this.requirements.set(day, getRequiredServicesForDate(date));
+      const wk = weekendKeyForDate(date);
+      if (wk) this.weekendMap.set(day, wk);
+    }
+
+    this.employees.forEach((emp) => {
+      const perDay = this.state.assignments?.[this.monthKey]?.[emp.id] || {};
+      const map = new Map();
+      Object.entries(perDay).forEach(([d, sid]) => map.set(Number(d), sid));
+      this.assignments.set(emp.id, map);
+      if (sidIsC10(perDay)) {
+        this.c10Counts.set(emp.id, 1);
+      }
+    });
+  }
+
+  /**
+   * Erstellt einen zufälligen, möglichst validen Startplan.
+   */
+  buildInitialPlan() {
+    for (let day = 1; day <= this.days; day++) {
+      const required = this.requirements.get(day) || [];
+      required.forEach((service) => {
+        if (this.isServiceAlreadyCovered(day, service.id)) return;
+        const candidates = shuffleArray(this.employees.slice());
+        for (const emp of candidates) {
+          if (this.tryAssign(emp, day, service.id)) break;
         }
-        state.assignments[monthKey][emp.id][day] = c10.id;
-        c10Counts.set(emp.id, 1);
-      }
+      });
     }
   }
-  const rules = state.rules;
-  const totalWeekends = totalWeekendsInMonth(currentMonth);
-  const minFreeWeekends = Number(rules.minFreeWeekends) || 0;
-  const allowedWorkedWeekends = Math.max(totalWeekends - minFreeWeekends, 0);
-  const optimizerProfile = loadOptimizerProfile();
-  const scoreWeights = deriveDynamicWeights(optimizerProfile);
-  const orderedEmployees = getOrderedEmployees().filter((emp) => isEmployeeFullMonth(emp, currentMonth));
-  const rawPivot = Number(state.layout?.generatorPivot) || 0;
-  const pivot = orderedEmployees.length ? rawPivot % orderedEmployees.length : 0;
-  const rotated = orderedEmployees.slice(pivot).concat(orderedEmployees.slice(0, pivot));
-  const weekendSets = new Map();
-  const getWeekendSet = (empId) => {
-    if (!weekendSets.has(empId)) {
-      weekendSets.set(empId, workedWeekendSet(monthKey, empId));
-    }
-    return weekendSets.get(empId);
-  };
 
-  const holidayOrSundayType = (date) => {
-    if (isHoliday(date)) return 'holiday';
-    if (date.getDay() === 0) return 'sunday';
-    return null;
-  };
-  const isC10Service = (service) => service?.name?.trim().toUpperCase() === 'C10';
-
-  // Bestehende, nicht gesperrte Einträge für den Monat zurücksetzen
-  state.employees.forEach((emp) => {
-    if (!state.assignments[monthKey][emp.id]) state.assignments[monthKey][emp.id] = {};
-    for (let day = 1; day <= days; day++) {
-      const locked = state.locks[monthKey]?.[emp.id]?.[day];
-      const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
-      const vacationEntry = findVacationOnDate(emp, date);
-      const sickEntry = findSickOnDate(emp, date);
-      const keepAssignment =
-        (vacationEntry && VACATION_TYPES[vacationEntry.type]?.clearsAssignments === false) ||
-        (sickEntry && SICK_TYPES[sickEntry.kind]?.clearsAssignments === false);
-      const keepC10 = c10 && state.assignments[monthKey][emp.id]?.[day] === c10.id;
-      if (!locked && !keepAssignment && !keepC10) {
-        delete state.assignments[monthKey][emp.id][day];
-      }
-    }
-  });
-
-  const serviceCounts = new Map();
-  const assignmentCounts = new Map();
-  const countHolidayAssignmentsCache = new Map();
-  Object.entries(state.assignments[monthKey]).forEach(([empId, entries]) => {
-    Object.entries(entries).forEach(([day, serviceId]) => {
-      const map = serviceCounts.get(empId) || {};
-      map[serviceId] = (map[serviceId] || 0) + 1;
-      serviceCounts.set(empId, map);
-      assignmentCounts.set(empId, (assignmentCounts.get(empId) || 0) + 1);
-      const service = state.services.find((s) => s.id === serviceId);
-      if (isC10Service(service)) {
-        c10Counts.set(empId, (c10Counts.get(empId) || 0) + 1);
-      }
-      const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), Number(day));
-      const h = holidayOrSundayType(date);
-      if (h === 'holiday' || h === 'sunday') {
-        countHolidayAssignmentsCache.set(empId, (countHolidayAssignmentsCache.get(empId) || 0) + 1);
-      }
+  /**
+   * @param {Map<string, Map<number, string>>} plan
+   */
+  clonePlan(plan) {
+    const copy = new Map();
+    plan.forEach((map, empId) => {
+      const next = new Map();
+      map.forEach((val, key) => next.set(key, val));
+      copy.set(empId, next);
     });
-  });
-
-  const getCounts = (empId, serviceId) => {
-    const serviceMap = serviceCounts.get(empId) || {};
-    return { service: serviceMap[serviceId] || 0, total: assignmentCounts.get(empId) || 0 };
-  };
-
-  const incrementCounts = (empId, serviceId, date) => {
-    const map = serviceCounts.get(empId) || {};
-    map[serviceId] = (map[serviceId] || 0) + 1;
-    serviceCounts.set(empId, map);
-    assignmentCounts.set(empId, (assignmentCounts.get(empId) || 0) + 1);
-    const service = state.services.find((s) => s.id === serviceId);
-    if (isC10Service(service)) {
-      c10Counts.set(empId, (c10Counts.get(empId) || 0) + 1);
-    }
-    const h = date ? holidayOrSundayType(date) : null;
-    if (h === 'holiday' || h === 'sunday') {
-      countHolidayAssignmentsCache.set(empId, (countHolidayAssignmentsCache.get(empId) || 0) + 1);
-    }
-  };
-
-  const countConsecutiveAssignments = (empId, day, predicate) =>
-    countStreakForMonth(empId, day, predicate, monthKey);
-
-  const cumulativeServiceHours = (empId, untilDay) => {
-    const assignments = state.assignments[monthKey]?.[empId] || {};
-    let total = 0;
-    for (let i = 1; i <= untilDay; i++) {
-      const sid = assignments[i];
-      const svc = state.services.find((s) => s.id === sid);
-      if (svc) total += serviceDuration(svc);
-    }
-    return total;
-  };
-
-  const rollingHours = (empId, endDay, window = 5) => {
-    const start = Math.max(1, endDay - window + 1);
-    return cumulativeServiceHours(empId, endDay) - cumulativeServiceHours(empId, start - 1);
-  };
-
-  const gapSinceLastNight = (empId, day) => {
-    const assignments = state.assignments[monthKey]?.[empId] || {};
-    for (let i = day - 1; i >= 1; i--) {
-      const sid = assignments[i];
-      if (!sid) continue;
-      const svc = state.services.find((s) => s.id === sid);
-      if (!svc) continue;
-      if (isNightService(svc)) return day - i - 1;
-      break;
-    }
-    return Infinity;
-  };
-
-  const segmentSpreadPenalty = (empId, day, service) => {
-    const assignments = state.assignments[monthKey]?.[empId] || {};
-    const segments = [0, 0, 0];
-    Object.entries(assignments).forEach(([d, sid]) => {
-      const svc = state.services.find((s) => s.id === sid);
-      if (!svc) return;
-      const segIndex = Math.min(2, Math.floor(((Number(d) - 1) / days) * 3));
-      segments[segIndex] += serviceDuration(svc);
-    });
-    const targetSeg = Math.min(2, Math.floor(((day - 1) / days) * 3));
-    segments[targetSeg] += serviceDuration(service);
-    const avg = segments.reduce((a, b) => a + b, 0) / segments.length || 0;
-    return segments.reduce((sum, value) => sum + Math.pow(value - avg, 2), 0) / segments.length;
-  };
-
-  const forwardStreak = (empId, day, predicate) => {
-    const assignments = state.assignments[monthKey]?.[empId] || {};
-    let streak = 0;
-    for (let i = day; i <= days; i++) {
-      const sid = assignments[i];
-      if (!sid) break;
-      const svc = state.services.find((s) => s.id === sid);
-      if (!svc || !predicate(svc, sid)) break;
-      streak++;
-    }
-    return streak;
-  };
-
-  const isDayBlockedForRest = (emp, date) =>
-    !!findVacationOnDate(emp, date) || !!findSickOnDate(emp, date) || !!state.locks[monthKey]?.[emp.id]?.[date.getDate()];
-
-  const wouldCreateSplitDayPattern = (emp, day) => {
-    const assignments = state.assignments[monthKey]?.[emp.id] || {};
-    const prev1 = assignments[day - 1];
-    const prev2 = assignments[day - 2];
-    const next1 = assignments[day + 1];
-    const next2 = assignments[day + 2];
-    const datePrev1 = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day - 1);
-    const dateNext1 = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day + 1);
-    const prevBlocked = isDayBlockedForRest(emp, datePrev1);
-    const nextBlocked = isDayBlockedForRest(emp, dateNext1);
-    if (!prev1 && prev2 && !prevBlocked) return true;
-    if (!next1 && next2 && !nextBlocked) return true;
-    if (!prev1 && !next1 && (prev2 || next2)) return true;
-    return false;
-  };
-
-  const continuityPenalty = (empId, day, service) => {
-    const assignments = state.assignments[monthKey]?.[empId] || {};
-    const prevServiceId = assignments[day - 1];
-    const nextServiceId = assignments[day + 1];
-    const prevService = prevServiceId ? state.services.find((s) => s.id === prevServiceId) : null;
-    const nextService = nextServiceId ? state.services.find((s) => s.id === nextServiceId) : null;
-    let penalty = 0;
-    if (prevService && isNightService(prevService) !== isNightService(service)) penalty += 1.2;
-    if (nextService && isNightService(nextService) !== isNightService(service)) penalty += 0.8;
-    const prevEmpty = !prevServiceId;
-    const nextEmpty = !nextServiceId;
-    if (prevEmpty && nextEmpty) penalty += 0.5; // isolated single
-    if (wouldCreateSplitDayPattern(state.employees.find((e) => e.id === empId), day)) penalty += 6;
-    const backStreak = countConsecutiveAssignments(empId, day, () => true);
-    const frontStreak = forwardStreak(empId, day + 1, () => true);
-    const projectedBlock = backStreak + 1 + frontStreak;
-    if (projectedBlock >= 2 && projectedBlock <= 4) penalty -= 0.8;
-    if (backStreak >= 2) {
-      const gap = lastAssignmentInfo(empId, day, monthKey).gap;
-      if (gap < 2) penalty += 3; // encourage two days rest after blocks
-    }
-    if (!prevEmpty && !nextEmpty) penalty -= 0.4; // cohesive middle of block
-    return penalty;
-  };
-
-  const blockPatternPenalty = (emp, day, service) => {
-    const assignments = state.assignments[monthKey]?.[emp.id] || {};
-    const prev1 = assignments[day - 1];
-    const next1 = assignments[day + 1];
-    const prev2 = assignments[day - 2];
-    const next2 = assignments[day + 2];
-    let penalty = 0;
-    if (!prev1 && !next1) penalty += 2.5;
-    if (!prev1 && prev2) penalty += 4.5;
-    if (!next1 && next2) penalty += 4.5;
-    if (prev1 && next1) penalty -= 0.8;
-    const prevStreak = countConsecutiveAssignments(emp.id, day, () => true);
-    const forwardLen = forwardStreak(emp.id, day + 1, () => true);
-    const projectedBlock = prevStreak + 1 + forwardLen;
-    if (projectedBlock >= 2 && projectedBlock <= 4) penalty -= 1.5;
-    if (projectedBlock > 4) penalty += 2;
-    const gap = lastAssignmentInfo(emp.id, day, monthKey).gap;
-    if (prevStreak >= 2 && gap < 2) penalty += 3;
-    if (wouldCreateSplitDayPattern(emp, day)) penalty += 8;
-    const dow = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day).getDay();
-    if ((dow === 6 || dow === 0) && !(prev1 || next1)) penalty += 3;
-    if (dow === 6) {
-      const sunday = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day + 1);
-      const sundayServices = getRequiredServicesForDate(sunday);
-      if (sundayServices.some((s) => s.id === service.id) && !isAvailableForDate(emp, sunday, service)) penalty += 5;
-    }
-    return penalty;
-  };
-
-  const countHolidayAssignments = (empId) => {
-    if (countHolidayAssignmentsCache.has(empId)) return countHolidayAssignmentsCache.get(empId);
-    const assignments = state.assignments[monthKey]?.[empId] || {};
-    let total = 0;
-    Object.keys(assignments).forEach((day) => {
-      const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), Number(day));
-      const h = holidayOrSundayType(date);
-      if (h === 'holiday' || h === 'sunday') total += 1;
-    });
-    countHolidayAssignmentsCache.set(empId, total);
-    return total;
-  };
-
-  let totalNightRequirements = 0;
-  let totalHolidayRequirements = 0;
-  const eligibleCache = new Map();
-  const getEligibleCount = (service) => {
-    if (!service) return 0;
-    if (eligibleCache.has(service.id)) return eligibleCache.get(service.id);
-    const count = rotated.filter((emp) => {
-      const func = state.functions.find((f) => f.id === emp.functionId);
-      const allowed = Array.isArray(func?.serviceIds) && func.serviceIds.includes(service.id);
-      if (!allowed) return false;
-      if (isNightService(service) && !emp.nightAllowed) return false;
-      return true;
-    }).length;
-    eligibleCache.set(service.id, count || 0);
-    return count || 0;
-  };
-
-  for (let day = 1; day <= days; day++) {
-    const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
-    const services = getRequiredServicesForDate(date);
-    totalNightRequirements += services.filter((svc) => isNightService(svc)).length;
-    const h = holidayOrSundayType(date);
-    if (h === 'holiday' || h === 'sunday') {
-      totalHolidayRequirements += services.length;
-    }
+    return copy;
   }
-  const eligibleHolidayCount = rotated.length || 1;
 
-  const eligibleNightCount = rotated.filter((emp) => emp.nightAllowed).length || 1;
+  toStateAssignments(plan = this.assignments) {
+    const output = {};
+    plan.forEach((days, empId) => {
+      output[empId] = {};
+      days.forEach((sid, day) => {
+        output[empId][day] = sid;
+      });
+    });
+    return output;
+  }
 
-  const lastDayServiceGap = (empId, day) => {
-    const assignments = state.assignments[monthKey]?.[empId] || {};
-    for (let i = day - 1; i >= 1; i--) {
-      const sid = assignments[i];
-      if (!sid) continue;
-      const svc = state.services.find((s) => s.id === sid);
-      if (svc && !isNightService(svc)) {
-        return day - i - 1;
-      }
-    }
-    return null;
-  };
+  /**
+   * Prüft, ob ein Dienst bereits vergeben ist (Deckung der Anforderungen zählt einfach pro Slot).
+   */
+  isServiceAlreadyCovered(day, serviceId) {
+    let assigned = 0;
+    this.assignments.forEach((entries) => {
+      if (entries.get(day) === serviceId) assigned++;
+    });
+    const required = (this.requirements.get(day) || []).filter((s) => s.id === serviceId).length;
+    return assigned >= required;
+  }
 
-  const isAvailableForDate = (emp, date, service) => {
+  /**
+   * Prüft Hard-Constraints für eine mögliche Zuweisung.
+   */
+  validateHard(emp, day, service) {
+    const date = new Date(this.monthDate.getFullYear(), this.monthDate.getMonth(), day);
     if (!isEmployeeActiveOnDate(emp, date)) return false;
-    if (!employeeAllowedForService(emp, service)) return false;
-    if (findVacationOnDate(emp, date)) return false;
-    if (findSickOnDate(emp, date)) return false;
-    if (isNightService(service) && !emp.nightAllowed) return false;
-    return true;
-  };
-
-  const respectsRestAfterNights = (emp, day) => {
-    const { gap, service } = lastAssignmentInfo(emp.id, day, monthKey);
-    if (!service || !isNightService(service)) return true;
-    const nightStreak = countConsecutiveAssignments(emp.id, day, (svc) => isNightService(svc));
-    const requiredRest = nightStreak >= 2 ? rules.restAfterDoubleNight : rules.restAfterNight;
-    if (!requiredRest) return true;
-    return gap >= requiredRest;
-  };
-
-  const hasMinimumRestHours = (emp, day, service) => {
-    const { gap, service: prevService } = lastAssignmentInfo(emp.id, day, monthKey);
-    if (!prevService) return true;
-    if (gap >= 1) return true;
-    const prevEnd = parseTime(prevService.end);
-    const start = parseTime(service.start);
-    if (!Number.isFinite(prevEnd) || !Number.isFinite(start)) return true;
-    const restHours = (24 - prevEnd + start + 24) % 24;
-    return restHours >= 11;
-  };
-
-  const canAssign = (emp, day, service, opts = {}) => {
-    const { allowSplitPattern = false, allowWeekendSolo = false, skipLookahead = false } = opts;
-    const currentDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
-
-    if (!isEmployeeActiveOnDate(emp, currentDate)) return false;
-    if (findVacationOnDate(emp, currentDate) || findSickOnDate(emp, currentDate)) return false;
+    if (findVacationOnDate(emp, date) || findSickOnDate(emp, date)) return false;
+    if (this.state.locks[this.monthKey]?.[emp.id]?.[day]) return false;
+    if (hasNextDayAbsenceOrWish(emp, date) && isNightService(service)) return false;
+    if (isDayAfterNight(emp, date)) return false;
     if (!employeeAllowedForService(emp, service)) return false;
     if (isNightService(service) && !emp.nightAllowed) return false;
 
-    // HARTE REGEL: am Tag nach einem Nachtdienst GAR KEIN Dienst
-    if (isDayAfterNight(emp, currentDate)) return false;
+    const dayAssignments = this.assignments.get(emp.id) || new Map();
+    if (dayAssignments.has(day)) return false;
 
-    const dayAssignments = state.assignments[monthKey][emp.id] || {};
-    const locked = state.locks[monthKey]?.[emp.id]?.[day];
-    const existing = dayAssignments[day];
-    if (locked || existing) return false;
-
-    const previousServiceId = dayAssignments[day - 1];
-    const previousService = previousServiceId ? state.services.find((s) => s.id === previousServiceId) : null;
-    const nextServiceId = dayAssignments[day + 1];
-    const nextService = nextServiceId ? state.services.find((s) => s.id === nextServiceId) : null;
-
-    const isNight = isNightService(service);
-    const hadNightYesterday = previousService && isNightService(previousService);
-    const hadDayYesterday = previousService && !isNightService(previousService);
-
-    // C10 maximal 1x pro Mitarbeiter
-    if (isC10Service(service) && (c10Counts.get(emp.id) || 0) >= 1) return false;
-
-    // Kein Nachtdienst direkt vor Wunschfrei/Urlaub/Krankenstand
-    if (isNight && hasNextDayAbsenceOrWish(emp, currentDate)) return false;
-
-    // Keine direkten D<->N-Wechsel
-    if ((isNight && hadDayYesterday) || (!isNight && hadNightYesterday)) return false;
-
-    // Kein N-D-Mix mit dem nächsten Tag
-    if (nextService && isNightService(nextService) !== isNightService(service)) return false;
-
-    // Restzeit nach Nächten
+    if (!hasMinimumRestHours(emp, day, service)) return false;
     if (!respectsRestAfterNights(emp, day)) return false;
 
-    // Mindest-Ruhe 11h
-    if (!hasMinimumRestHours(emp, day, service)) return false;
+    if (isC10Service(service) && (this.c10Counts.get(emp.id) || 0) >= 1) return false;
 
-    // Streaks (max. gleiche Dienste / Blöcke)
-    const sameServiceStreak = countConsecutiveAssignments(emp.id, day, (svc, sid) => sid === service.id);
-    if (sameServiceStreak >= 4) return false;
-
-    const anyStreak = countConsecutiveAssignments(emp.id, day, () => true);
-    if (anyStreak >= 5) return false;
-
-    const dayStreak = countConsecutiveAssignments(emp.id, day, (svc) => !isNightService(svc));
-    const nightStreak = countConsecutiveAssignments(emp.id, day, (svc) => isNightService(svc));
-
-    if (!isNight && dayStreak >= 4) return false;
-    if (isNight && nightStreak >= 2) return false;
-    if (isNight && !emp.doubleNights && nightStreak >= 1) return false;
-
-    // Muster- und Block-Logik (nur weich anpassbar über Optionen)
-    if (!allowSplitPattern && day > 2 && day < days - 1) {
-      if (wouldCreateSplitDayPattern(emp, day)) return false;
-    }
-
-    // Wochenendlogik (Samstag/Sonntag-Paarung bleibt hier, wie gehabt)
-    const dow = currentDate.getDay();
-    if (dow === 0) {
-      const saturdayServiceId = dayAssignments[day - 1];
-      if (saturdayServiceId && saturdayServiceId !== service.id) return false;
-    }
-    if (dow === 6 && !allowWeekendSolo) {
-      const sunday = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day + 1);
-      const sundayServices = getRequiredServicesForDate(sunday);
-      if (sundayServices.some((s) => s.id === service.id) && !isEmployeeActiveOnDate(emp, sunday)) {
+    const dow = date.getDay();
+    if (dow === 6) {
+      const sunday = new Date(date.getFullYear(), date.getMonth(), day + 1);
+      const sundayReq = getRequiredServicesForDate(sunday);
+      if (sundayReq.some((s) => s.id === service.id) && !isEmployeeActiveOnDate(emp, sunday)) {
         return false;
       }
     }
-
-    // Lookahead: keine unlösbaren Folgetage erzeugen
-    if (!skipLookahead) {
-      for (let nd = day + 1; nd <= Math.min(days, day + 2); nd++) {
-        const dt = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), nd);
-        const req = getRequiredServicesForDate(dt);
-        if (!req.length) continue;
-
-        const stillNeeded = req.filter(() => {
-          const count = Object.values(state.assignments[monthKey]).filter((a) => a?.[nd]).length;
-          return count < req.length;
-        });
-        if (!stillNeeded.length) continue;
-
-        const possible = getOrderedEmployees().some((e) => {
-          if (e.id === emp.id) return false;
-          return canAssign(e, nd, req[0], { skipLookahead: true });
-        });
-
-        if (!possible) return false;
-      }
+    if (dow === 0) {
+      const previous = dayAssignments.get(day - 1);
+      if (previous && previous !== service.id) return false;
     }
 
     return true;
-  };
+  }
 
-  const describeOpenService = (service, date, day) => {
-    let inactive = 0;
-    let absent = 0;
-    let unqualified = 0;
-    let nightBlocked = 0;
-    let ruleBlocked = 0;
-    let recommendation = null;
-
-    for (const emp of rotated) {
-      if (!isEmployeeActiveOnDate(emp, date)) {
-        inactive++;
-        continue;
-      }
-      if (findVacationOnDate(emp, date) || findSickOnDate(emp, date)) {
-        absent++;
-        continue;
-      }
-      if (!employeeAllowedForService(emp, service)) {
-        unqualified++;
-        continue;
-      }
-      if (isNightService(service) && !emp.nightAllowed) {
-        nightBlocked++;
-        continue;
-      }
-      const feasible = canAssign(emp, day, service, {
-        allowSplitPattern: true,
-        allowWeekendSolo: true,
-        skipLookahead: true,
-      });
-      if (!feasible) ruleBlocked++;
-
-      if (!feasible) {
-        const target = monthlyTargetHours(emp, currentMonth) || 0;
-        const current = hoursForEmployee(monthKey, emp.id);
-        const diff = target ? Math.abs(current - target) : current;
-        if (!recommendation || diff < recommendation.diff) {
-          recommendation = {
-            emp,
-            diff,
-            reason: 'Regelkonflikt/Restzeit',
-          };
-        }
-      }
-    }
-
-    const parts = [];
-    if (unqualified) parts.push(`${unqualified} ohne Qualifikation`);
-    if (nightBlocked) parts.push(`${nightBlocked} keine Nächte`);
-    if (absent) parts.push(`${absent} abwesend (Urlaub/Krank)`);
-    if (inactive) parts.push(`${inactive} nicht verfügbar`);
-    if (ruleBlocked) parts.push(`Regeln/Restzeiten blockieren (${ruleBlocked})`);
-    const reason = parts.length ? parts.join(', ') : 'keine passenden Mitarbeitenden verfügbar';
-    const suggestion = recommendation
-      ? ` Empfehlung: ${escapeHtml(formatName(recommendation.emp))} (beste Passung, ${recommendation.reason}).`
-      : '';
-    return `Dienst ${service.name} am ${date.toLocaleDateString('de-AT')} offen: ${reason}.${suggestion}`;
-  };
-
-  const recordOpenServices = () => {
-    const notes = [];
-    for (let day = 1; day <= days; day++) {
-      const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
-      const remaining = remainingServicesForDay(day, monthKey, date);
-      if (!remaining.length) continue;
-      for (const service of remaining) {
-        notes.push(describeOpenService(service, date, day));
-      }
-    }
-    return notes;
-  };
-
-  const fillRemainingServices = (monthDate) => {
-    const daysInTarget = daysInMonth(monthDate);
-    const monthKeyFill = getMonthKey(monthDate);
-
-    for (let day = 1; day <= daysInTarget; day++) {
-      const date = new Date(monthDate.getFullYear(), monthDate.getMonth(), day);
-      const remaining = remainingServicesForDay(day, monthKeyFill, date);
-      if (!remaining.length) continue;
-
-      for (const service of remaining) {
-        const candidates = getOrderedEmployees()
-          .filter((emp) => isEmployeeActiveOnDate(emp, date))
-          .sort((a, b) => hoursForEmployee(monthKeyFill, a.id) - hoursForEmployee(monthKeyFill, b.id));
-
-        for (const emp of candidates) {
-          if (state.locks[monthKeyFill]?.[emp.id]?.[day]) continue;
-          if (state.assignments[monthKeyFill]?.[emp.id]?.[day]) continue;
-          if (!employeeAllowedForService(emp, service)) continue;
-          if (!isAvailableForDate(emp, date, service)) continue;
-          if (!canAssign(emp, day, service, { allowSplitPattern: true, allowWeekendSolo: true, skipLookahead: true }))
-            continue;
-
-          if (!state.assignments[monthKeyFill][emp.id]) state.assignments[monthKeyFill][emp.id] = {};
-          state.assignments[monthKeyFill][emp.id][day] = service.id;
-          incrementCounts(emp.id, service.id, date);
-          if (isWeekend(date)) {
-            const weekendKey = weekendKeyForDate(date);
-            if (weekendKey) getWeekendSet(emp.id).add(weekendKey);
-          }
-          break;
-        }
-      }
-    }
-  };
-
-  const weekendSchedule = (() => {
-    const schedule = [];
-    for (let day = 1; day <= days; day++) {
-      const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
-      if (date.getDay() === 6) {
-        const sunday = day + 1 <= days ? day + 1 : null;
-        schedule.push({ key: weekendKeyForDate(date), days: [day, sunday].filter(Boolean) });
-      }
-    }
-    return schedule;
-  })();
-
-  const weekendWorkCache = new Map();
-  const weekendWorkSet = (empId) => {
-    if (weekendWorkCache.has(empId)) return weekendWorkCache.get(empId);
-    const assignments = state.assignments[monthKey]?.[empId] || {};
-    const keys = new Set();
-    weekendSchedule.forEach((slot) => {
-      const hasWork = slot.days.some((d) => {
-        const sid = assignments[d];
-        if (!sid || sid === 'WUNSCHFREI') return false;
-        const svc = state.services.find((s) => s.id === sid);
-        return !!svc;
-      });
-      if (hasWork && slot.key) keys.add(slot.key);
-    });
-    weekendWorkCache.set(empId, keys);
-    return keys;
-  };
-
-  const moveAssignment = (fromEmp, toEmp, day, serviceId) => {
-    const service = state.services.find((s) => s.id === serviceId);
-    if (!service || serviceId === 'WUNSCHFREI') return false;
-    if (state.locks[monthKey]?.[fromEmp.id]?.[day]) return false;
-    if (state.locks[monthKey]?.[toEmp.id]?.[day]) return false;
-
-    const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
-    if (!canAssign(toEmp, day, service, { allowWeekendSolo: true, allowSplitPattern: true })) return false;
-
-    const donorAssignments = state.assignments[monthKey][fromEmp.id] || {};
-    const receiverAssignments = state.assignments[monthKey][toEmp.id] || {};
-    delete donorAssignments[day];
-    receiverAssignments[day] = serviceId;
-    state.assignments[monthKey][fromEmp.id] = donorAssignments;
-    state.assignments[monthKey][toEmp.id] = receiverAssignments;
-
-    if (isWeekend(date)) {
-      if (isC10Service(service)) {
-        c10Counts.set(fromEmp.id, Math.max(0, (c10Counts.get(fromEmp.id) || 0) - 1));
-        c10Counts.set(toEmp.id, (c10Counts.get(toEmp.id) || 0) + 1);
-      }
-      weekendSets.set(fromEmp.id, workedWeekendSet(monthKey, fromEmp.id));
-      weekendSets.set(toEmp.id, workedWeekendSet(monthKey, toEmp.id));
-      weekendWorkCache.delete(fromEmp.id);
-      weekendWorkCache.delete(toEmp.id);
-    }
+  tryAssign(emp, day, serviceId) {
+    const service = this.services.find((s) => s.id === serviceId);
+    if (!service) return false;
+    if (!this.validateHard(emp, day, service)) return false;
+    const dayAssignments = this.assignments.get(emp.id) || new Map();
+    dayAssignments.set(day, serviceId);
+    this.assignments.set(emp.id, dayAssignments);
+    if (isC10Service(service)) this.c10Counts.set(emp.id, 1);
     return true;
-  };
+  }
 
-  const ensureWeekendFairness = () => {
-    const lacking = rotated.filter((emp) => weekendWorkSet(emp.id).size === 0);
-    if (!lacking.length) return;
-    const donors = rotated.filter((emp) => weekendWorkSet(emp.id).size > 1);
-    if (!donors.length) return;
+  removeAssignment(empId, day) {
+    const map = this.assignments.get(empId);
+    if (!map) return null;
+    const sid = map.get(day);
+    map.delete(day);
+    return sid;
+  }
 
-    lacking.forEach((target) => {
-      if (weekendWorkSet(target.id).size) return;
-      for (const slot of weekendSchedule) {
-        if (weekendWorkSet(target.id).size) break;
-        for (const donor of donors) {
-          if (weekendWorkSet(donor.id).size <= 1) continue;
-          const donorAssignments = state.assignments[monthKey][donor.id] || {};
-          for (const day of slot.days) {
-            const serviceId = donorAssignments[day];
-            if (!serviceId || serviceId === 'WUNSCHFREI') continue;
-            if (state.assignments[monthKey][target.id]?.[day]) continue;
-            if (moveAssignment(donor, target, day, serviceId)) break;
-          }
-          if (weekendWorkSet(target.id).size) break;
+  /**
+   * Berechnet den Penalty-Score für den aktuellen Plan.
+   */
+  computeScore(plan = this.assignments) {
+    const WEIGHTS = {
+      hours: 4.5,
+      weekend: 3.5,
+      holiday: 3.2,
+      night: 4,
+      islands: 2,
+      uncovered: 50,
+    };
+
+    let cost = 0;
+
+    for (let day = 1; day <= this.days; day++) {
+      const required = this.requirements.get(day) || [];
+      const assignedIds = [];
+      plan.forEach((entries) => {
+        const sid = entries.get(day);
+        if (sid) assignedIds.push(sid);
+      });
+      required.forEach((svc) => {
+        const idx = assignedIds.indexOf(svc.id);
+        if (idx !== -1) {
+          assignedIds.splice(idx, 1);
+        } else {
+          cost += WEIGHTS.uncovered * 100;
         }
+      });
+    }
+
+    const weekendTargets = Math.max(1, Math.round(totalWorkedWeekends(plan, this.monthDate) / Math.max(1, this.employees.length)));
+    const holidayTarget = Math.max(1, Math.round(totalHolidayShifts(plan, this.monthDate) / Math.max(1, this.employees.length)));
+
+    for (const emp of this.employees) {
+      const entries = plan.get(emp.id) || new Map();
+      const hours = Array.from(entries.values()).reduce((sum, sid) => {
+        const svc = this.services.find((s) => s.id === sid);
+        return svc ? sum + serviceDuration(svc) : sum;
+      }, 0);
+      const target = monthlyTargetHours(emp, this.monthDate) || 0;
+      if (target > 0) {
+        const rel = (hours - target) / target;
+        cost += rel * rel * 100 * WEIGHTS.hours;
+      }
+
+      const weekendCount = weekendKeysForEmployee(entries, this.monthDate).size;
+      const weekendDiff = weekendCount - weekendTargets;
+      cost += weekendDiff * weekendDiff * 20 * WEIGHTS.weekend;
+
+      const { nights, holidays } = countSpecials(entries, this.monthDate, this.services);
+      const nightIdeal = totalNightRequirements(this.monthDate) / Math.max(1, this.nightPoolSize);
+      cost += (nights - nightIdeal) * (nights - nightIdeal) * 15 * WEIGHTS.night;
+      cost += (holidays - holidayTarget) * (holidays - holidayTarget) * 10 * WEIGHTS.holiday;
+
+      cost += calculateIslandPenalty(entries, this.monthDate) * WEIGHTS.islands;
+    }
+
+    return cost;
+  }
+
+  randomMove() {
+    const day = 1 + Math.floor(Math.random() * this.days);
+    const requirement = this.requirements.get(day) || [];
+    const service = requirement[Math.floor(Math.random() * Math.max(1, requirement.length))];
+    if (!service) return null;
+
+    const [donor, receiver] = shuffleArray(this.employees.slice()).slice(0, 2);
+    if (!donor || !receiver) return null;
+
+    const donorMap = this.assignments.get(donor.id) || new Map();
+    const receiverMap = this.assignments.get(receiver.id) || new Map();
+    const donorSid = donorMap.get(day);
+    const receiverSid = receiverMap.get(day);
+
+    if (!donorSid && !receiverSid) {
+      if (!this.tryAssign(donor, day, service.id)) return null;
+      return () => {
+        this.removeAssignment(donor.id, day);
+      };
+    }
+
+    const sourceEmp = donorSid ? donor : receiver;
+    const targetEmp = donorSid ? receiver : donor;
+    const serviceId = donorSid || receiverSid;
+    const svc = this.services.find((s) => s.id === serviceId);
+    if (!svc) return null;
+
+    if (!this.validateHard(targetEmp, day, svc)) return null;
+
+    const sourceMap = this.assignments.get(sourceEmp.id) || new Map();
+    const targetMap = this.assignments.get(targetEmp.id) || new Map();
+
+    sourceMap.delete(day);
+    targetMap.set(day, serviceId);
+    this.assignments.set(sourceEmp.id, sourceMap);
+    this.assignments.set(targetEmp.id, targetMap);
+
+    return () => {
+      targetMap.delete(day);
+      sourceMap.set(day, serviceId);
+    };
+  }
+
+  /**
+   * Optimiert den Plan asynchron und gibt das beste Ergebnis zurück.
+   * @returns {Promise<{ assignments: Record<string, Record<number, string>> }>}
+   */
+  async optimize() {
+    this.buildInitialPlan();
+    let bestPlan = this.clonePlan(this.assignments);
+    let bestScore = this.computeScore(bestPlan);
+    let temperature = 1.0;
+    const maxIter = 3000;
+    const chunk = 200;
+
+    for (let iter = 0; iter < maxIter; iter++) {
+      const rollback = this.randomMove();
+      if (!rollback) {
+        if (iter % chunk === 0) await wait();
+        continue;
+      }
+
+      const nextScore = this.computeScore(this.assignments);
+      const delta = nextScore - bestScore;
+      const accept = delta < 0 || Math.exp(-delta / Math.max(0.001, temperature)) > Math.random();
+
+      if (accept) {
+        if (nextScore < bestScore) {
+          bestScore = nextScore;
+          bestPlan = this.clonePlan(this.assignments);
+        }
+      } else {
+        rollback();
+      }
+
+      temperature *= 0.995;
+      if (iter % chunk === 0) await wait();
+    }
+
+    this.assignments = bestPlan;
+    return { assignments: this.toStateAssignments(bestPlan) };
+  }
+}
+
+function sidIsC10(perDay) {
+  return Object.values(perDay || {}).some((sid) => {
+    const svc = state.services.find((s) => s.id === sid);
+    return isC10Service(svc);
+  });
+}
+
+function calculateIslandPenalty(entries, monthDate) {
+  let penalty = 0;
+  for (let day = 1; day <= daysInMonth(monthDate); day++) {
+    const prev = entries.get(day - 1);
+    const cur = entries.get(day);
+    const next = entries.get(day + 1);
+    if (cur && !prev && !next) penalty += 2;
+    if (prev && !cur && next) penalty += 3;
+  }
+  return penalty;
+}
+
+function weekendKeysForEmployee(entries, monthDate) {
+  const set = new Set();
+  entries.forEach((sid, day) => {
+    const dt = new Date(monthDate.getFullYear(), monthDate.getMonth(), day);
+    if (dt.getDay() === 0 || dt.getDay() === 6) {
+      const wk = weekendKeyForDate(dt);
+      if (wk) set.add(wk);
+    }
+  });
+  return set;
+}
+
+function countSpecials(entries, monthDate, services) {
+  let nights = 0;
+  let holidays = 0;
+  entries.forEach((sid, day) => {
+    const svc = services.find((s) => s.id === sid);
+    if (!svc) return;
+    const dt = new Date(monthDate.getFullYear(), monthDate.getMonth(), day);
+    if (isNightService(svc)) nights++;
+    if (isHoliday(dt) || dt.getDay() === 0) holidays++;
+  });
+  return { nights, holidays };
+}
+
+function totalWorkedWeekends(plan, monthDate) {
+  const seen = new Set();
+  plan.forEach((entries) => {
+    entries.forEach((sid, day) => {
+      if (!sid) return;
+      const dt = new Date(monthDate.getFullYear(), monthDate.getMonth(), day);
+      if (dt.getDay() === 0 || dt.getDay() === 6) {
+        const wk = weekendKeyForDate(dt);
+        if (wk) seen.add(wk);
       }
     });
-  };
+  });
+  return seen.size;
+}
 
+function totalHolidayShifts(plan, monthDate) {
+  let total = 0;
+  plan.forEach((entries) => {
+    entries.forEach((sid, day) => {
+      const dt = new Date(monthDate.getFullYear(), monthDate.getMonth(), day);
+      if (isHoliday(dt) || dt.getDay() === 0) total++;
+    });
+  });
+  return total;
+}
+
+function totalNightRequirements(monthDate) {
+  let nights = 0;
+  const days = daysInMonth(monthDate);
   for (let day = 1; day <= days; day++) {
-    const currentDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
-    const servicesForDay = getRequiredServicesForDate(currentDate);
-    for (const service of servicesForDay) {
-      const buildCandidates = (options = {}) =>
-        rotated
-          .filter((emp) => {
-            if (isWeekend(currentDate) && !options.allowWeekendOverflow) {
-              const weekendKey = weekendKeyForDate(currentDate);
-              const set = getWeekendSet(emp.id);
-              if (weekendKey && !set.has(weekendKey) && set.size >= allowedWorkedWeekends) {
-                return false;
-              }
-            }
-            return canAssign(emp, day, service, options);
-          })
-          .map((emp) => {
-            const locked = state.locks[monthKey]?.[emp.id]?.[day];
-            const existing = state.assignments[monthKey][emp.id]?.[day];
-            if (locked || existing) return null;
-            const targetHours = monthlyTargetHours(emp, currentMonth);
-            const serviceHours = serviceDuration(service);
-            const projectedHours = hoursForEmployee(monthKey, emp.id) + serviceHours;
-            const nextNights = countNights(monthKey, emp.id) + (isNightService(service) ? 1 : 0);
-            if (rules.maxNights && nextNights > rules.maxNights) return null;
-            const counts = getCounts(emp.id, service.id);
-            const recentHours = rollingHours(emp.id, Math.max(1, day - 1), 5);
-            const projectedRecent = recentHours + serviceDuration(service);
-            const expectedRecent = targetHours ? (targetHours / days) * Math.min(5, day) : 0;
-            const projectedCumulative = cumulativeServiceHours(emp.id, Math.max(1, day - 1)) + serviceDuration(service);
-            const expectedCumulative = targetHours ? (targetHours * day) / days : projectedCumulative;
-            const monthlyTargetDiff = targetHours
-              ? Math.abs(projectedHours - targetHours) / Math.max(targetHours, 1)
-              : projectedHours * 0.01;
-            const blockPenalty = blockPatternPenalty(emp, day, service);
-            const shortTermBalance =
-              Math.abs(projectedRecent - expectedRecent) + segmentSpreadPenalty(emp.id, day, service) * 0.25 + blockPenalty;
-            const currentNights = countNights(monthKey, emp.id);
-            const projectedNights = currentNights + (isNightService(service) ? 1 : 0);
-            const idealNights = totalNightRequirements / eligibleNightCount;
-            const expectedNightsByDay = (idealNights * day) / days;
-            const nightBalance = Math.abs(projectedNights - expectedNightsByDay);
-            const weekendCount = getWeekendSet(emp.id).size + (isWeekend(currentDate) ? 1 : 0);
-            const expectedWeekends = allowedWorkedWeekends * (day / days);
-            const weekendBalance = Math.abs(weekendCount - expectedWeekends);
-            const holidayCount = countHolidayAssignments(emp.id);
-            const projectedHolidays = holidayCount + (holidayOrSundayType(currentDate) ? 1 : 0);
-            const idealHolidays = totalHolidayRequirements / Math.max(1, eligibleHolidayCount);
-            const expectedHolidaysByDay = idealHolidays ? (idealHolidays * day) / days : 0;
-            const holidayBalance = idealHolidays ? Math.abs(projectedHolidays - expectedHolidaysByDay) : 0;
-            const eligibleCount = getEligibleCount(service) || 1;
-            const qualificationScarcity = counts.service / Math.max(1, eligibleCount);
-            const randomNoise = Math.random() * 0.2;
-            const currentHours = hoursForEmployee(monthKey, emp.id);
-
-            const prioritiseEarlyDeficit =
-              targetHours && day < 10 && currentHours / targetHours < 0.65 ? -2 : 0;
-
-            const continuity = continuityPenalty(emp.id, day, service);
-            let scoreAdjustments = 0;
-
-            const weekendPairGuard = (() => {
-              if (options.allowWeekendSolo) return 0;
-              const dow = currentDate.getDay();
-              if (dow === 0) {
-                const saturdayHolder = state.employees.find((candidate) => {
-                  const assignment = state.assignments[monthKey][candidate.id]?.[day - 1];
-                  return assignment === service.id;
-                });
-                if (saturdayHolder && saturdayHolder.id !== emp.id) return 40;
-                const saturdayAvailable = isAvailableForDate(
-                  emp,
-                  new Date(currentDate.getFullYear(), currentDate.getMonth(), day - 1),
-                  service
-                );
-                if (!saturdayHolder && !saturdayAvailable) return 10;
-              }
-              if (dow === 6) {
-                const nextDate = new Date(currentDate.getFullYear(), currentMonth.getMonth(), day + 1);
-                const sundayServices = getRequiredServicesForDate(nextDate);
-                const needsPair = sundayServices.some((s) => s.id === service.id);
-                if (needsPair && !isAvailableForDate(emp, nextDate, service)) return 15;
-              }
-              return 0;
-            })();
-
-            const distributionPenalty =
-              Math.abs(projectedCumulative - expectedCumulative) * 0.5 + segmentSpreadPenalty(emp.id, day, service);
-            const holidayPriority = holidayOrSundayType(currentDate) ? holidayBalance : 0;
-
-            if (!service.isNight && violatesMinBlock(emp, day, monthKey)) {
-              scoreAdjustments += 999; // Sehr hohe Strafe
-            }
-
-            if (service.isNight) {
-              const remainingNights = totalNightRequirements - countTotalAssignedNights(monthKey);
-              if (remainingNights < rotated.length / 2) {
-                if (!emp.nightAllowed) scoreAdjustments += 500;
-              }
-            }
-
-            const target = monthlyTargetHours(emp, currentMonth);
-            if (target > 0) {
-              const diff = projectedHours - target;
-              if (diff > 0) scoreAdjustments += diff * diff * 0.15; // leichte Strafe, nicht verhindern!
-            }
-
-            const score =
-              monthlyTargetDiff * scoreWeights.monthlyTargetDiff +
-              shortTermBalance * scoreWeights.shortTermBalance +
-              nightBalance * scoreWeights.nightBalance +
-              weekendBalance * scoreWeights.weekendBalance +
-              holidayBalance * scoreWeights.holidayBalance +
-              qualificationScarcity * scoreWeights.qualificationScarcity +
-              distributionPenalty +
-              weekendPairGuard +
-              holidayPriority +
-              continuity +
-              randomNoise * (scoreWeights.randomNoise || 0.5) +
-              prioritiseEarlyDeficit +
-              scoreAdjustments;
-            return { emp, score, counts, projectedHours };
-          })
-          .filter(Boolean)
-          .sort((a, b) => {
-            if (a.score !== b.score) return a.score - b.score;
-            if (a.counts.service !== b.counts.service) return a.counts.service - b.counts.service;
-            return a.counts.total - b.counts.total;
-          });
-
-      let candidates = buildCandidates();
-      if (!candidates.length) {
-        candidates = buildCandidates({ allowSplitPattern: true, allowWeekendSolo: true });
-      }
-      if (!candidates.length) {
-        candidates = buildCandidates({ allowSplitPattern: true, allowWeekendSolo: true, allowWeekendOverflow: true });
-      }
-
-      const choice = candidates[0];
-      if (choice) {
-        const { emp } = choice;
-        if (!state.assignments[monthKey][emp.id]) state.assignments[monthKey][emp.id] = {};
-        state.assignments[monthKey][emp.id][day] = service.id;
-        incrementCounts(emp.id, service.id, currentDate);
-        if (isWeekend(currentDate)) {
-          const weekendKey = weekendKeyForDate(currentDate);
-          if (weekendKey) {
-            getWeekendSet(emp.id).add(weekendKey);
-          }
-        }
-      }
-    }
+    const date = new Date(monthDate.getFullYear(), monthDate.getMonth(), day);
+    const req = getRequiredServicesForDate(date);
+    nights += req.filter((s) => isNightService(s)).length;
   }
-  const rebalanceRoster = () => {
-    const activeEmployees = state.employees.filter((e) => e.status !== 'exited');
-    const hoursMap = new Map();
-    activeEmployees.forEach((emp) => {
-      hoursMap.set(emp.id, {
-        target: monthlyTargetHours(emp, currentMonth) || 0,
-        current: hoursForEmployee(monthKey, emp.id),
-      });
-    });
-    const sortedReceivers = activeEmployees
-      .slice()
-      .sort((a, b) => (hoursMap.get(b.id).target - hoursMap.get(b.id).current) - (hoursMap.get(a.id).target - hoursMap.get(a.id).current));
-    sortedReceivers.forEach((receiver) => {
-      const receiverInfo = hoursMap.get(receiver.id);
-      let deficit = (receiverInfo.target || 0) - receiverInfo.current;
-      if (deficit <= 0) return;
-      for (let day = 1; day <= days && deficit > 0; day++) {
-        const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
-        if (isWeekend(date)) continue;
-        const receiverAssignments = state.assignments[monthKey][receiver.id] || {};
-        if (receiverAssignments[day]) continue;
-        const donors = activeEmployees
-          .filter((donor) => donor.id !== receiver.id)
-          .filter((donor) => (state.assignments[monthKey][donor.id] || {})[day])
-          .filter((donor) => (hoursMap.get(donor.id)?.current || 0) > (hoursMap.get(donor.id)?.target || 0));
-        donors.sort((a, b) => (hoursMap.get(b.id).current - hoursMap.get(b.id).target) - (hoursMap.get(a.id).current - hoursMap.get(a.id).target));
-        for (const donor of donors) {
-          const donorAssignments = state.assignments[monthKey][donor.id] || {};
-          const serviceId = donorAssignments[day];
-          const service = state.services.find((s) => s.id === serviceId);
-          if (!service) continue;
-          if (state.locks[monthKey]?.[donor.id]?.[day] || state.locks[monthKey]?.[receiver.id]?.[day]) continue;
-          const projectedReceiver = receiverInfo.current + serviceDuration(service);
-          if (receiverInfo.target && projectedReceiver > receiverInfo.target + 4) continue;
-          if (!canAssign(receiver, day, service)) continue;
-          delete donorAssignments[day];
-          state.assignments[monthKey][receiver.id] = receiverAssignments;
-          receiverAssignments[day] = serviceId;
-          receiverInfo.current = projectedReceiver;
-          hoursMap.get(donor.id).current -= serviceDuration(service);
-          deficit = (receiverInfo.target || 0) - receiverInfo.current;
-          break;
-        }
-      }
-    });
-  };
+  return nights;
+}
 
-  // 1. klassische Rebalancierung (werktags, verschieben von Über- zu Unterplanten)
-  rebalanceRoster();
-
-  // 2. verbliebene Dienste füllen (unter Berücksichtigung von Stunden & Nachtregel)
-  fillRemainingServices(currentMonth);
-
-  // 3. Wochenendfairness sicherstellen
-  ensureWeekendFairness();
-
-  // 4. KI-Feinschliff (lokale Optimierung, Stunden weiter ausgleichen)
-  optimizeRosterLocally({
-    monthKey,
-    days,
-    employees: rotated,
-    rules,
-    allowedWorkedWeekends,
-    totalNightRequirements,
-    totalHolidayRequirements,
-  });
-
-  // 5. Offene Dienste dokumentieren
-  const unplannedNotes = recordOpenServices();
-  unplannedNotes.forEach((note) => appendLog('roster', note));
-  if (unplannedNotes.length) {
-    showNotification('Einige Dienste blieben offen – Details im Log.', 'error');
+function shuffleArray(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
   }
+  return arr;
+}
 
-  const finalCost = evaluateGlobalCost(
-    monthKey,
-    days,
-    rotated,
-    rules,
-    allowedWorkedWeekends,
-    totalNightRequirements,
-    totalHolidayRequirements
-  );
-  const optimizerMetrics = collectPlanMetrics(
-    monthKey,
-    days,
-    rotated,
-    allowedWorkedWeekends,
-    totalNightRequirements,
-    totalHolidayRequirements
-  );
-  const weightAdjustments = computeWeightAdjustments(scoreWeights);
-  const learningApplied = Object.values(weightAdjustments).some((entry) => Math.abs(entry.delta) > 0.01);
-  const learningNote = learningApplied ? 'Gewichte aus Verlauf angepasst' : 'Basisgewichte genutzt';
-  const history = Array.isArray(optimizerProfile.history) ? optimizerProfile.history.slice(-19) : [];
-  history.push({
-    monthKey,
-    cost: finalCost,
-    metrics: optimizerMetrics,
-    timestamp: Date.now(),
-    weights: scoreWeights,
-    adjustments: weightAdjustments,
-    learningApplied,
-    note: learningNote,
-  });
-  saveOptimizerProfile({ history });
-  renderScoreHistory();
-
-  const label = currentMonth.toLocaleDateString('de-AT', { month: 'long', year: 'numeric' });
-  state.layout.generatorPivot = rotated.length ? (pivot + 1) % rotated.length : 0;
-  appendLog('roster', `Dienstplan für ${label} generiert.`);
+async function generatePlanSmart() {
+  const optimizer = new RosterOptimizer(currentMonth, { state, rules: state.rules });
+  const { assignments } = await optimizer.optimize();
+  state.assignments[getMonthKey(currentMonth)] = assignments;
+  appendLog('roster', 'Neuer Plan via RosterOptimizer generiert.');
   saveState();
   renderRoster();
+}
+
+async function generateRoster() {
+  return generatePlanSmart();
 }
 
 function evaluateGlobalCost(
@@ -6101,13 +5620,13 @@ function wireEvents() {
       }
     });
   }
-  on(generateBtn, 'click', () => {
+  on(generateBtn, 'click', async () => {
     if (!canEditRoster()) {
       showNotification('Keine Berechtigung zum Generieren', 'error');
       return;
     }
     if (confirm('Dienstplan automatisch generieren?')) {
-      generateRoster();
+      await generateRoster();
       showNotification('Dienstplan erfolgreich generiert', 'success');
     }
   });
