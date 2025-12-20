@@ -4688,15 +4688,15 @@ class RosterOptimizer {
     this.daysInMonth = new Date(this.monthDate.getFullYear(), this.monthDate.getMonth() + 1, 0).getDate();
     this.assignments = {};
     this.employees = state.employees.filter((e) => e.status === 'active');
-    this.history = { steps: 0, initialPenalty: 0, finalPenalty: 0, violations: [] };
+    this.history = { swaps: 0, initialPenalty: 0, finalPenalty: 0 };
   }
 
   async run() {
     this.forceFullAssignment();
     this.history.initialPenalty = this.calculateTotalPenalty();
 
-    let temp = 100;
-    const iterations = 20000;
+    let temp = 1000;
+    const iterations = 25000;
 
     for (let i = 0; i < iterations; i++) {
       const move = this.proposeMove();
@@ -4706,57 +4706,61 @@ class RosterOptimizer {
 
       if (delta < 0 || Math.random() < Math.exp(-delta / temp)) {
         this.applyMove(move);
-        this.history.steps++;
+        if (delta !== 0) this.history.swaps++;
       }
-      temp *= 0.9997;
+      temp *= 0.9996;
+
       if (i % 1000 === 0) await new Promise((r) => setTimeout(r, 0));
     }
 
     this.history.finalPenalty = this.calculateTotalPenalty();
-    this.saveToScoreHistory();
+    this.updateScoreHistory();
     return this.assignments;
-  }
-
-  calculateTotalPenalty() {
-    return this.employees.reduce((sum, emp) => sum + this.getEmpPenalty(emp.id), 0);
   }
 
   getEmpPenalty(empId) {
     let penalty = 0;
     const work = this.assignments[empId] || {};
-    const sortedDays = Object.keys(work)
+    const days = Object.keys(work)
       .map(Number)
       .sort((a, b) => a - b);
 
-    for (let i = 0; i < sortedDays.length; i++) {
-      const day = sortedDays[i];
+    const employee = this.state.employees.find((e) => e.id === empId);
+    const employment = this.state.employmentTypes.find((t) => t.id === employee?.employmentTypeId);
+    const targetHours = employment ? parseFloat(employment.hours) : 0;
+
+    let totalHours = 0;
+
+    days.forEach((day) => {
       const srv = this.state.services.find((s) => s.id === work[day]);
+      const hours = srv ? parseFloat(srv.duration) : 0;
+      totalHours += hours;
 
       if (srv?.isNight) {
-        if (work[day + 1] || work[day + 2]) {
-          penalty += 5000;
-        }
+        if (work[day + 1] || work[day + 2]) penalty += 10000;
       }
 
-      const weekHours = this.getWeeklyHours(empId, day);
-      if (weekHours > 40) {
-        penalty += (weekHours - 40) * 1000;
+      if (this.getWeeklyHours(empId, day) > 40) {
+        penalty += 5000;
       }
+    });
+
+    if (totalHours > targetHours) {
+      penalty += (totalHours - targetHours) * 100;
+    } else {
+      penalty += totalHours * 0.1;
     }
+
     return penalty;
   }
 
   getWeeklyHours(empId, day) {
-    const date = new Date(this.monthDate.getFullYear(), this.monthDate.getMonth(), day);
-    const dayOfWeek = date.getDay();
-    const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-    const startOfWeek = day - diffToMonday;
-
     let hours = 0;
-    for (let d = startOfWeek; d < startOfWeek + 7; d++) {
-      if (this.assignments[empId]?.[d]) {
-        const s = this.state.services.find((srv) => srv.id === this.assignments[empId][d]);
-        hours += s?.duration || 12;
+    for (let d = day - 6; d <= day; d++) {
+      const sId = this.assignments[empId]?.[d];
+      if (sId) {
+        const s = this.state.services.find((srv) => srv.id === sId);
+        hours += s ? parseFloat(s.duration) : 0;
       }
     }
     return hours;
@@ -4768,26 +4772,17 @@ class RosterOptimizer {
 
     const before = this.getEmpPenalty(move.empAId) + this.getEmpPenalty(move.empBId);
 
-    this.applyMove(move);
+    const oldA = this.assignments[move.empAId]?.[move.day];
+    const oldB = this.assignments[move.empBId]?.[move.day];
+    this.updateAssignment(move.empAId, move.day, move.valB);
+    this.updateAssignment(move.empBId, move.day, move.valA);
+
     const after = this.getEmpPenalty(move.empAId) + this.getEmpPenalty(move.empBId);
 
-    const reverseMove = { ...move, valA: move.valB, valB: move.valA };
-    this.applyMove(reverseMove);
+    this.updateAssignment(move.empAId, move.day, oldA);
+    this.updateAssignment(move.empBId, move.day, oldB);
 
     return after - before;
-  }
-
-  saveToScoreHistory() {
-    const entry = {
-      id: Date.now(),
-      date: new Date().toISOString(),
-      month: this.monthKey,
-      initialPenalty: this.history.initialPenalty,
-      finalPenalty: this.history.finalPenalty,
-      swaps: this.history.steps,
-    };
-    if (!state.optimizerHistory) state.optimizerHistory = [];
-    state.optimizerHistory.unshift(entry);
   }
 
   forceFullAssignment() {
@@ -4795,50 +4790,52 @@ class RosterOptimizer {
       const requiredServiceIds = this.getRequiredServicesForDay(d);
 
       requiredServiceIds.forEach((serviceId) => {
-        const qualified = this.employees.filter((emp) => this.canDo(emp.id, serviceId));
+        const qualified = this.employees.filter((e) => this.canDo(e.id, serviceId));
 
         if (qualified.length > 0) {
           qualified.sort((a, b) => this.getWorkload(a.id) - this.getWorkload(b.id));
-          const bestFit = qualified[0];
-
-          if (!this.assignments[bestFit.id]) this.assignments[bestFit.id] = {};
-          this.assignments[bestFit.id][d] = serviceId;
-        } else {
-          console.error(`KRITISCH: Kein Personal für Dienst ${serviceId} am Tag ${d}`);
+          const chosen = qualified[0];
+          this.updateAssignment(chosen.id, d, serviceId);
         }
       });
     }
   }
 
-  canDo(empId, serviceId) {
-    const emp = this.state.employees.find((e) => e.id === empId);
-    const srv = this.state.services.find((s) => s.id === serviceId);
-    if (!emp || !srv) return false;
-
-    const func = this.state.functions.find((f) => f.id === emp.functionId);
-    return Array.isArray(func?.serviceIds) && func.serviceIds.includes(srv.id);
+  updateScoreHistory() {
+    const entry = {
+      id: Date.now(),
+      month: this.monthKey,
+      initial: this.history.initialPenalty.toFixed(0),
+      final: this.history.finalPenalty.toFixed(0),
+      swaps: this.history.swaps,
+      timestamp: new Date().toLocaleString(),
+    };
+    if (!this.state.optimizerHistory) this.state.optimizerHistory = [];
+    this.state.optimizerHistory.unshift(entry);
+    saveState();
   }
 
   getWorkload(empId) {
     return Object.keys(this.assignments[empId] || {}).length;
   }
 
+  canDo(empId, sId) {
+    const emp = this.state.employees.find((e) => e.id === empId);
+    const srv = this.state.services.find((s) => s.id === sId);
+    return emp && srv && emp.functions.includes(srv.functionId);
+  }
+
   proposeMove() {
-    if (!this.employees.length) return null;
     const day = Math.floor(Math.random() * this.daysInMonth) + 1;
     const empA = this.employees[Math.floor(Math.random() * this.employees.length)];
-    let empB = this.employees[Math.floor(Math.random() * this.employees.length)];
-    let guard = 0;
-    while (empB.id === empA.id && guard < 5) {
-      empB = this.employees[Math.floor(Math.random() * this.employees.length)];
-      guard++;
-    }
-
-    const valA = this.assignments[empA.id]?.[day] || null;
-    const valB = this.assignments[empB.id]?.[day] || null;
-    if (!valA && !valB) return null;
-
-    return { day, empAId: empA.id, empBId: empB.id, valA, valB };
+    const empB = this.employees[Math.floor(Math.random() * this.employees.length)];
+    return {
+      day,
+      empAId: empA.id,
+      empBId: empB.id,
+      valA: this.assignments[empA.id]?.[day] || null,
+      valB: this.assignments[empB.id]?.[day] || null,
+    };
   }
 
   updateAssignment(empId, day, val) {
@@ -4852,16 +4849,17 @@ class RosterOptimizer {
     this.updateAssignment(move.empBId, move.day, move.valA);
   }
 
+  calculateTotalPenalty() {
+    return this.employees.reduce((sum, e) => sum + this.getEmpPenalty(e.id), 0);
+  }
+
   getRequiredServicesForDay(day) {
     const date = new Date(this.monthDate.getFullYear(), this.monthDate.getMonth(), day);
     const dayOfWeek = date.getDay();
-    const rule = this.state.rules?.weekdayRules?.[0];
-    const services = rule?.services || {};
-    const list = services[dayOfWeek] || services.holiday || [];
-    return Array.isArray(list) && list.length ? list : [];
+    const rule = this.state.rules.weekdayRules[0];
+    return rule.services[dayOfWeek] || [];
   }
 }
-
 function totalNightRequirements(monthDate) {
   let nights = 0;
   const days = daysInMonth(monthDate);
@@ -4882,6 +4880,8 @@ function shuffleArray(arr) {
 }
 
 async function generatePlanSmart() {
+  showNotification('Optimierung läuft... Bitte warten.', 'info');
+
   const optimizer = new RosterOptimizer(currentMonth, state);
   const result = await optimizer.run();
 
@@ -4889,8 +4889,10 @@ async function generatePlanSmart() {
 
   saveState();
   renderRoster();
-  if (typeof renderScoreMenu === 'function') renderScoreMenu();
-  showNotification(`Optimierung beendet. ${optimizer.history.steps} Täusche durchgeführt.`, 'success');
+
+  if (window.renderScoreMenu) renderScoreMenu();
+
+  showNotification(`Generierung abgeschlossen. ${optimizer.history.swaps} Täusche optimiert.`, 'success');
 }
 
 async function generateRoster() {
