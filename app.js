@@ -4693,9 +4693,11 @@ function wait(ms = 0) {
 class RosterOptimizer {
   /**
    * @param {Date} monthDate
-   * @param {{ state: any, rules: any }} params
+   * @param {{ state: any, rules?: any } | any} params
    */
-  constructor(monthDate, { state: sourceState, rules }) {
+  constructor(monthDate, params) {
+    const sourceState = params?.state ?? params;
+    const rules = params?.rules;
     this.monthDate = monthDate;
     this.monthKey = getMonthKey(monthDate);
     this.days = daysInMonth(monthDate);
@@ -4747,6 +4749,12 @@ class RosterOptimizer {
 
   calculateTotalScore() {
     return this.computeScore(this.assignments);
+  }
+
+  maxPerEmployeeScore(details) {
+    const values = Array.from(details?.perEmployee?.values?.() || details?.perEmployee || []);
+    if (!values.length) return 0;
+    return Math.max(...values);
   }
 
   /**
@@ -5054,33 +5062,53 @@ class RosterOptimizer {
   }
 
   /**
-   * Optimiert den Plan asynchron und gibt das beste Ergebnis zurück.
-   * @returns {Promise<{ assignments: Record<string, Record<number, string>> }>}
+   * Heuristische Optimierung (Simulated Annealing light):
+   * 1) Starte mit einem zufälligen, gültigen Plan
+   * 2) Führe viele Dienst-Tauschs aus und akzeptiere Verbesserungen
+   * 3) Minimiere sowohl den Gesamtscore als auch die Maximalstrafe pro Mitarbeiter
+   * @param {number} iterations
+   * @returns {Promise<Record<string, Record<number, string>>>}
    */
-  async optimize(iterations = 1000) {
+  async runOptimization(iterations = 5000) {
     this.buildInitialPlan();
     this.swapCount = 0;
     this.temperature = 1.0;
-    let currentScore = this.calculateTotalScore();
+
+    let currentDetails = this.evaluatePlan(this.assignments);
+    let bestPlan = this.clonePlan(this.assignments);
+    let bestDetails = currentDetails;
 
     for (let i = 0; i < iterations; i++) {
       const move = this.generateRandomMove();
-      const delta = this.calculateScoreDelta(move);
+      const rollback = this.applyMove(move);
+      if (!rollback) continue;
 
-      if (delta < 0 || Math.random() < Math.exp(-delta / Math.max(0.001, this.temperature))) {
-        const applied = this.applyMove(move);
-        if (applied) {
-          this.swapCount += 1;
-          currentScore += delta;
+      const nextDetails = this.evaluatePlan(this.assignments);
+      const currentMax = this.maxPerEmployeeScore(currentDetails);
+      const nextMax = this.maxPerEmployeeScore(nextDetails);
+      const deltaTotal = nextDetails.total - currentDetails.total;
+      const improvesPerEmployee = nextMax < currentMax || (nextMax === currentMax && nextDetails.total <= currentDetails.total);
+      const accept = improvesPerEmployee || Math.random() < Math.exp(-deltaTotal / Math.max(0.001, this.temperature));
+
+      if (accept) {
+        this.swapCount += 1;
+        currentDetails = nextDetails;
+        const bestMax = this.maxPerEmployeeScore(bestDetails);
+        if (nextMax < bestMax || (nextMax === bestMax && nextDetails.total < bestDetails.total)) {
+          bestPlan = this.clonePlan(this.assignments);
+          bestDetails = nextDetails;
         }
+      } else {
+        rollback();
       }
 
       if (i % 100 === 0) await wait(0);
       this.temperature *= 0.995;
     }
 
-    this.lastScoreDetails = this.evaluatePlan(this.assignments);
-    return this.assignments;
+    this.assignments = bestPlan;
+    this.lastScoreDetails = bestDetails;
+    return this.toStateAssignments(bestPlan);
   }
 }
 
@@ -5179,21 +5207,13 @@ async function generatePlanSmart() {
     return;
   }
 
-  showNotification('Generierung gestartet...', 'info');
   setButtonLoading(generateBtn, true);
-  const optimizer = new RosterOptimizer(currentMonth, { state, rules: state.rules });
+  const optimizer = new RosterOptimizer(currentMonth, state);
 
   try {
-    const result = await optimizer.optimize(2000);
-    const planMap = result instanceof Map ? result : result?.plan || result?.assignments || optimizer.assignments;
+    const result = await optimizer.runOptimization(5000);
     const monthKey = getMonthKey(currentMonth);
-    state.assignments[monthKey] = {};
-
-    if (planMap instanceof Map) {
-      planMap.forEach((map, empId) => {
-        state.assignments[monthKey][empId] = Object.fromEntries(map);
-      });
-    }
+    state.assignments[monthKey] = result;
 
     const days = daysInMonth(currentMonth);
     const employees = getOrderedEmployees();
@@ -5214,7 +5234,7 @@ async function generatePlanSmart() {
       weights: optimizer.scoreWeights,
       perEmployee,
       swapCount: optimizer.swapCount || 0,
-      note: 'Penalty Score gespeichert',
+      note: 'Penalty Score gespeichert (heuristisch)',
       timestamp: Date.now(),
     });
 
@@ -5222,7 +5242,7 @@ async function generatePlanSmart() {
     saveState();
     renderScoreHistory();
     renderRoster();
-    showNotification('Dienstplan erfolgreich generiert!', 'success');
+    showNotification('Plan generiert!', 'success');
   } catch (err) {
     console.error(err);
     showNotification('Fehler bei der Generierung', 'error');
@@ -5817,10 +5837,9 @@ function wireEvents() {
       }
     });
   }
-  on(generateBtn, 'click', () => {
-    if (confirm('Dienstplan automatisch generieren?')) {
-      generatePlanSmart();
-    }
+  on(generateBtn, 'click', async () => {
+    showNotification('Generierung läuft...', 'info');
+    await generatePlanSmart();
   });
   on(clearBtn, 'click', () => {
     if (!canEditRoster()) {
