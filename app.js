@@ -12,6 +12,7 @@ const STORAGE_KEYS = {
   vacationLimits: 'dienstplan_vacation_limits',
   tickets: 'dienstplan_tickets',
   missionSettings: 'dienstplan_missions_settings',
+  optimizer: 'dienstplan_optimizer_history',
 };
 
 const STORAGE_FILE_NAME = 'dienstplan_daten.json';
@@ -41,6 +42,8 @@ const uuid = () => {
   const hasCrypto = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function';
   return hasCrypto ? crypto.randomUUID() : `id-${Math.random().toString(16).slice(2)}-${Date.now()}`;
 };
+
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
 function generateTicketNumber() {
   const now = new Date();
@@ -624,6 +627,44 @@ function loadFromStorage(key, fallback, validate = () => true) {
   }
   localStorage.setItem(key, JSON.stringify(defaultValue));
   return defaultValue;
+}
+
+function loadOptimizerProfile() {
+  return loadValue(STORAGE_KEYS.optimizer, { history: [] });
+}
+
+function saveOptimizerProfile(profile) {
+  localStorage.setItem(STORAGE_KEYS.optimizer, JSON.stringify(profile || { history: [] }));
+}
+
+function deriveDynamicWeights(profile) {
+  const baseWeights = {
+    monthlyTargetDiff: 3.5,
+    shortTermBalance: 6,
+    nightBalance: 8,
+    weekendBalance: 4.5,
+    holidayBalance: 6,
+    qualificationScarcity: 7.5,
+    randomNoise: 0.5,
+  };
+  const history = Array.isArray(profile?.history) ? profile.history.slice(-6) : [];
+  if (!history.length) return baseWeights;
+
+  const avg = (key) => history.reduce((sum, run) => sum + (run.metrics?.[key] || 0), 0) / history.length;
+  const hourVariance = avg('hourVariance');
+  const weekendVariance = avg('weekendVariance');
+  const holidayVariance = avg('holidayVariance');
+  const nightVariance = avg('nightVariance');
+  const isolation = avg('isolationPenalty');
+
+  return {
+    ...baseWeights,
+    monthlyTargetDiff: baseWeights.monthlyTargetDiff * (1 + clamp(hourVariance, 0, 2)),
+    weekendBalance: baseWeights.weekendBalance * (1 + clamp(weekendVariance, 0, 3) * 0.35),
+    holidayBalance: baseWeights.holidayBalance * (1 + clamp(holidayVariance, 0, 3) * 0.3),
+    nightBalance: baseWeights.nightBalance * (1 + clamp(nightVariance, 0, 3) * 0.25),
+    shortTermBalance: baseWeights.shortTermBalance * (1 + clamp(isolation, 0, 3) * 0.2),
+  };
 }
 
 function sanitizeGroups(groups = []) {
@@ -4538,6 +4579,8 @@ function generateRoster() {
   const totalWeekends = totalWeekendsInMonth(currentMonth);
   const minFreeWeekends = Number(rules.minFreeWeekends) || 0;
   const allowedWorkedWeekends = Math.max(totalWeekends - minFreeWeekends, 0);
+  const optimizerProfile = loadOptimizerProfile();
+  const scoreWeights = deriveDynamicWeights(optimizerProfile);
   const orderedEmployees = getOrderedEmployees().filter((emp) => isEmployeeFullMonth(emp, currentMonth));
   const rawPivot = Number(state.layout?.generatorPivot) || 0;
   const pivot = orderedEmployees.length ? rawPivot % orderedEmployees.length : 0;
@@ -5235,17 +5278,17 @@ function generateRoster() {
             }
 
             const score =
-              monthlyTargetDiff * 3.5 +
-              shortTermBalance * 6 +
-              nightBalance * 8 +
-              weekendBalance * 4.5 +
-              holidayBalance * 6 +
-              qualificationScarcity * 7.5 +
+              monthlyTargetDiff * scoreWeights.monthlyTargetDiff +
+              shortTermBalance * scoreWeights.shortTermBalance +
+              nightBalance * scoreWeights.nightBalance +
+              weekendBalance * scoreWeights.weekendBalance +
+              holidayBalance * scoreWeights.holidayBalance +
+              qualificationScarcity * scoreWeights.qualificationScarcity +
               distributionPenalty +
               weekendPairGuard +
               holidayPriority +
               continuity +
-              randomNoise * 0.5 +
+              randomNoise * (scoreWeights.randomNoise || 0.5) +
               prioritiseEarlyDeficit +
               scoreAdjustments;
             return { emp, score, counts, projectedHours };
@@ -5354,6 +5397,27 @@ function generateRoster() {
     showNotification('Einige Dienste blieben offen – Details im Log.', 'error');
   }
 
+  const finalCost = evaluateGlobalCost(
+    monthKey,
+    days,
+    rotated,
+    rules,
+    allowedWorkedWeekends,
+    totalNightRequirements,
+    totalHolidayRequirements
+  );
+  const optimizerMetrics = collectPlanMetrics(
+    monthKey,
+    days,
+    rotated,
+    allowedWorkedWeekends,
+    totalNightRequirements,
+    totalHolidayRequirements
+  );
+  const history = Array.isArray(optimizerProfile.history) ? optimizerProfile.history.slice(-19) : [];
+  history.push({ monthKey, cost: finalCost, metrics: optimizerMetrics, timestamp: Date.now() });
+  saveOptimizerProfile({ history });
+
   const label = currentMonth.toLocaleDateString('de-AT', { month: 'long', year: 'numeric' });
   state.layout.generatorPivot = rotated.length ? (pivot + 1) % rotated.length : 0;
   appendLog('roster', `Dienstplan für ${label} generiert.`);
@@ -5439,6 +5503,71 @@ function evaluateGlobalCost(
   }
 
   return cost;
+}
+
+function collectPlanMetrics(
+  monthKey,
+  days,
+  employees,
+  allowedWorkedWeekends,
+  totalNightRequirements,
+  totalHolidayRequirements
+) {
+  const metrics = {
+    hourVariance: 0,
+    nightVariance: 0,
+    weekendVariance: 0,
+    holidayVariance: 0,
+    isolationPenalty: 0,
+  };
+
+  const nightPool = employees.filter((e) => e.nightAllowed).length || 1;
+  const idealNights = totalNightRequirements / nightPool;
+  const idealHoliday = totalHolidayRequirements / Math.max(1, employees.length);
+
+  employees.forEach((emp) => {
+    const empId = emp.id;
+    const assignments = state.assignments[monthKey]?.[empId] || {};
+    const target = monthlyTargetHours(emp, currentMonth) || 0;
+    const actual = hoursForEmployee(monthKey, empId);
+    const relDiff = target ? (actual - target) / target : 0;
+    metrics.hourVariance += relDiff * relDiff;
+
+    const nights = countNights(monthKey, empId);
+    const nightDiff = nights - idealNights;
+    metrics.nightVariance += nightDiff * nightDiff;
+
+    const weekendKeys = new Set();
+    let holidayCount = 0;
+    for (let d = 1; d <= days; d++) {
+      const sid = assignments[d];
+      if (!sid) continue;
+      const dt = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), d);
+      if (dt.getDay() === 0 || dt.getDay() === 6) {
+        const wk = weekendKeyForDate(dt);
+        if (wk) weekendKeys.add(wk);
+      }
+      if (isHoliday(dt) || dt.getDay() === 0) {
+        holidayCount++;
+      }
+      const prev = assignments[d - 1];
+      const next = assignments[d + 1];
+      if (prev && !assignments[d] && next) metrics.isolationPenalty += 1;
+      if (assignments[d] && !prev && !next) metrics.isolationPenalty += 0.5;
+    }
+    const weekendDiff = weekendKeys.size - allowedWorkedWeekends;
+    metrics.weekendVariance += weekendDiff * weekendDiff;
+    const holidayDiff = holidayCount - idealHoliday;
+    metrics.holidayVariance += holidayDiff * holidayDiff;
+  });
+
+  const divisor = Math.max(1, employees.length);
+  metrics.hourVariance /= divisor;
+  metrics.nightVariance /= divisor;
+  metrics.weekendVariance /= divisor;
+  metrics.holidayVariance /= divisor;
+  metrics.isolationPenalty /= divisor;
+  return metrics;
 }
 
 
