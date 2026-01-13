@@ -10,18 +10,94 @@ const STORAGE_KEYS = {
   layout: 'dienstplan_layout',
   logs: 'dienstplan_logs',
   vacationLimits: 'dienstplan_vacation_limits',
+  tickets: 'dienstplan_tickets',
+  missionSettings: 'dienstplan_missions_settings',
+  optimizer: 'dienstplan_optimizer_history',
 };
+
+let selfReadOnly = false;
 
 const STORAGE_FILE_NAME = 'dienstplan_daten.json';
 const THEME_STORAGE_KEY = 'dienstplan_theme';
+const AREAS = ['Technik', 'Leitung', 'Ausbildung'];
+const DEFAULT_MISSION_SETTINGS = { endpoint: '' };
+const MISSION_VEHICLE_CODES = [
+  '10-101',
+  '10-102',
+  '10-103',
+  '10-104',
+  '10-105',
+  '10-106',
+  'Martin 1',
+  'Martin 6',
+  'Martin 10',
+  'C6',
+  'Alpin Heli 6',
+];
+
+const USERS = {
+  '05475': { password: '1234', name: 'Admin', permissions: { roster: 'write', tickets: 'edit', admin: true } },
+  '012345': { password: '4321', name: 'Leser', permissions: { roster: 'read', tickets: 'create', admin: false } },
+};
 
 const uuid = () => {
   const hasCrypto = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function';
   return hasCrypto ? crypto.randomUUID() : `id-${Math.random().toString(16).slice(2)}-${Date.now()}`;
 };
 
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+function generateTicketNumber() {
+  const now = new Date();
+  const datePart = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  const timePart = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+  return `T-${datePart}-${timePart}-${Math.random().toString(16).slice(2, 6).toUpperCase()}`;
+}
+
 const clone = (value) =>
   typeof structuredClone === 'function' ? structuredClone(value) : JSON.parse(JSON.stringify(value));
+
+const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+function normalizeAssignments(raw) {
+  if (!isPlainObject(raw)) return {};
+  const normalized = {};
+  Object.entries(raw).forEach(([monthKey, employeeMap]) => {
+    if (!isPlainObject(employeeMap)) return;
+    normalized[monthKey] = {};
+    Object.entries(employeeMap).forEach(([empId, entries]) => {
+      if (!isPlainObject(entries)) return;
+      normalized[monthKey][empId] = {};
+      Object.entries(entries).forEach(([day, serviceId]) => {
+        const dayNum = Number(day);
+        if (Number.isInteger(dayNum) && dayNum > 0) {
+          normalized[monthKey][empId][dayNum] = serviceId;
+        }
+      });
+    });
+  });
+  return normalized;
+}
+
+function normalizeLocks(raw) {
+  if (!isPlainObject(raw)) return {};
+  const normalized = {};
+  Object.entries(raw).forEach(([monthKey, employeeMap]) => {
+    if (!isPlainObject(employeeMap)) return;
+    normalized[monthKey] = {};
+    Object.entries(employeeMap).forEach(([empId, entries]) => {
+      if (!isPlainObject(entries)) return;
+      normalized[monthKey][empId] = {};
+      Object.entries(entries).forEach(([day, locked]) => {
+        const dayNum = Number(day);
+        if (Number.isInteger(dayNum) && dayNum > 0) {
+          normalized[monthKey][empId][dayNum] = !!locked;
+        }
+      });
+    });
+  });
+  return normalized;
+}
 
 const DEFAULT_EMPLOYMENT = [
   { id: uuid(), percent: 100, hours: 173 },
@@ -37,8 +113,13 @@ const DEFAULT_SERVICES = [
 ];
 
 const DEFAULT_FUNCTIONS = (services) => [
-  { id: uuid(), name: 'Disponent*in', serviceIds: services.filter((s) => s.name.toLowerCase().includes('d')).map((s) => s.id) },
-  { id: uuid(), name: 'Calltaker', serviceIds: services.filter((s) => s.name.toLowerCase().includes('c')).map((s) => s.id) },
+  {
+    id: uuid(),
+    name: 'Disponent*in',
+    serviceIds: services.filter((s) => s.name.toLowerCase().includes('d')).map((s) => s.id),
+    status: 'active',
+  },
+  { id: uuid(), name: 'Calltaker', serviceIds: services.filter((s) => s.name.toLowerCase().includes('c')).map((s) => s.id), status: 'active' },
 ];
 
 const VACATION_TYPES = {
@@ -74,6 +155,7 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     lastName: 'Huber',
     personnelNumber: '1001',
     birthday: '1988-05-12',
+    email: 'alex.huber@example.com',
     employmentPercent: employment[0].id,
     employmentHours: employment[0].id,
     functionId: functions[0].id,
@@ -88,6 +170,12 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     hireDate: '2023-01-01',
     endDate: '',
     doubleNights: false,
+    rosterPermission: 'write',
+    ticketPermission: 'edit',
+    admin: false,
+    vacationApproval: false,
+    areas: AREAS,
+    status: 'active',
   },
   {
     id: uuid(),
@@ -95,6 +183,7 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     lastName: 'Mayr',
     personnelNumber: '1002',
     birthday: '1990-09-02',
+    email: 'bianca.mayr@example.com',
     employmentPercent: employment[1].id,
     employmentHours: employment[1].id,
     functionId: functions[1].id,
@@ -109,6 +198,12 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     hireDate: '2023-01-01',
     endDate: '',
     doubleNights: false,
+    rosterPermission: 'write',
+    ticketPermission: 'edit',
+    admin: false,
+    vacationApproval: false,
+    areas: AREAS,
+    status: 'active',
   },
   {
     id: uuid(),
@@ -116,6 +211,7 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     lastName: 'Lenz',
     personnelNumber: '1003',
     birthday: '1992-03-21',
+    email: 'chris.lenz@example.com',
     employmentPercent: employment[2].id,
     employmentHours: employment[2].id,
     functionId: functions[0].id,
@@ -130,6 +226,40 @@ const DEFAULT_EMPLOYEES = (employment, functions) => [
     hireDate: '2023-01-01',
     endDate: '',
     doubleNights: false,
+    rosterPermission: 'write',
+    ticketPermission: 'edit',
+    admin: false,
+    vacationApproval: false,
+    areas: AREAS,
+    status: 'active',
+  },
+  {
+    id: uuid(),
+    firstName: 'Alois',
+    lastName: 'Reichsöllner',
+    personnelNumber: '1004',
+    birthday: '1985-11-03',
+    email: 'alois.reichsoellner@example.com',
+    employmentPercent: employment[0].id,
+    employmentHours: employment[0].id,
+    functionId: functions[0].id,
+    vacationDays: 25,
+    vacations: [],
+    sickLeaves: [],
+    groupId: null,
+    nightAllowed: true,
+    rkt: false,
+    holidayFactor: 0,
+    dailyWorkHours: 8,
+    hireDate: '2023-01-01',
+    endDate: '',
+    doubleNights: false,
+    rosterPermission: 'write',
+    ticketPermission: 'edit',
+    admin: false,
+    vacationApproval: false,
+    areas: AREAS,
+    status: 'active',
   },
 ];
 
@@ -141,6 +271,7 @@ const DEFAULT_LOGS = {
   employment: [],
   rules: [],
   vacationLimits: [],
+  tickets: [],
 };
 
 const defaultWeekdayServices = () => ({
@@ -163,13 +294,17 @@ const createWeekdayRule = (overrides = {}) => ({
 });
 
 const DEFAULT_RULES = {
-  restDays: 1,
+  restAfterNight: 1,
+  restAfterDoubleNight: 2,
   maxHoursWeek: 40,
   minFreeWeekends: 0,
   maxNights: 8,
   vacationDefault: 2,
   weekdayRules: [createWeekdayRule()],
 };
+
+const TICKET_STATUSES = ['Offen', 'in Bearbeitung', 'Zurückgestellt', 'Geschlossen'];
+const TICKET_PRIORITIES = ['hoch', 'mittel', 'gering'];
 
 const SALZBURG_HOLIDAYS = {
   // month-day: label
@@ -227,9 +362,13 @@ const prevMonthBtn = document.getElementById('prevMonth');
 const nextMonthBtn = document.getElementById('nextMonth');
 const generateBtn = document.getElementById('generatePlan');
 const printPlanBtn = document.getElementById('printPlan');
+const clearBtn = document.getElementById('clearPlan');
+const appShell = document.getElementById('appShell');
 const saveFileBtn = document.getElementById('saveFile');
 const loadFileBtn = document.getElementById('loadFile');
 const loadFileInput = document.getElementById('loadFileInput');
+const employeeExitBtn = document.getElementById('employeeExitBtn');
+const notificationStack = document.getElementById('notificationStack');
 const weekdaySelects = document.querySelectorAll('[data-weekday-select]');
 const weekdayFields = document.querySelectorAll('[data-weekday-field]');
 const createGroupBtn = document.getElementById('createGroupBtn');
@@ -255,40 +394,164 @@ const sickTypeSelect = document.getElementById('sickType');
 const rosterModeButtons = document.querySelectorAll('[data-roster-mode]');
 const serviceLegend = document.getElementById('serviceLegend');
 const themeToggle = document.getElementById('themeToggle');
+const loginForm = document.getElementById('loginForm');
+const loginUser = document.getElementById('loginUser');
+const loginPassword = document.getElementById('loginPassword');
+const loginStatus = document.getElementById('loginStatus');
+const logoutBtn = document.getElementById('logoutBtn');
 const openSickList = document.getElementById('openSickList');
 const vacationLimitForm = document.getElementById('vacationLimitForm');
 const vacationLimitStart = document.getElementById('vacationLimitStart');
 const vacationLimitEnd = document.getElementById('vacationLimitEnd');
 const vacationLimitValue = document.getElementById('vacationLimitValue');
 const vacationLimitList = document.getElementById('vacationLimitList');
-const vacationChart = document.getElementById('vacationChart');
 const vacationDefaultInput = document.getElementById('vacationDefault');
 const weekdayRangeStart = document.getElementById('weekdayRangeStart');
 const weekdayRangeEnd = document.getElementById('weekdayRangeEnd');
 const weekdayHistory = document.getElementById('weekdayHistory');
 const menuEmployeeAlert = document.getElementById('menuEmployeeAlert');
 const openSickIndicator = document.getElementById('openSickIndicator');
+const ticketForm = document.getElementById('ticketForm');
+const ticketNameInput = document.getElementById('ticketName');
+const ticketPriorityInput = document.getElementById('ticketPriority');
+const ticketDescriptionInput = document.getElementById('ticketDescription');
+const ticketReporterInput = document.getElementById('ticketReporter');
+const ticketReporterEmailInput = document.getElementById('ticketReporterEmail');
+const ticketAreaInput = document.getElementById('ticketArea');
+const ticketStatusFilter = document.getElementById('ticketStatusFilter');
+const ticketList = document.getElementById('ticketList');
+const scoreLegend = document.getElementById('scoreLegend');
+const scoreHistoryTable = document.getElementById('scoreHistoryTable');
+const planningSettings = document.getElementById('planningSettings');
+const adminSettings = document.getElementById('adminSettings');
+const overviewApprovals = document.getElementById('overviewApprovals');
+const overviewApprovalsBlock = document.getElementById('overviewApprovalsBlock');
+const overviewServices = document.getElementById('overviewServices');
+const overviewVacations = document.getElementById('overviewVacations');
+const overviewMyTickets = document.getElementById('overviewMyTickets');
+const overviewAssigned = document.getElementById('overviewAssigned');
+const overviewAssignedBlock = document.getElementById('overviewAssignedBlock');
+const yearOverviewTable = document.getElementById('yearOverviewTable');
+const yearOverviewLabel = document.getElementById('yearOverviewLabel');
+const yearOverviewPrev = document.getElementById('yearOverviewPrev');
+const yearOverviewNext = document.getElementById('yearOverviewNext');
+const missionServiceUrlInput = document.getElementById('missionServiceUrl');
+const missionSaveBtn = document.getElementById('missionSave');
+const missionRefreshBtn = document.getElementById('missionRefresh');
+const missionStatus = document.getElementById('missionStatus');
+const missionList = document.getElementById('missionList');
+const rulesLog = document.getElementById('rulesLog');
+const employmentLog = document.getElementById('employmentLog');
+const servicesLog = document.getElementById('servicesLog');
+const functionsLog = document.getElementById('functionsLog');
+const employeeAreasSelect = document.getElementById('employeeAreas');
 const logElements = {
   roster: document.getElementById('rosterLog'),
+  rules: rulesLog,
+  employment: employmentLog,
+  services: servicesLog,
+  functions: functionsLog,
 };
 
-let state = loadState();
-state.vacationLimits = Array.isArray(state.vacationLimits) ? state.vacationLimits : [];
+let state = null;
 let currentMonth = new Date();
 currentMonth.setDate(1);
 const editing = { employee: null, service: null, function: null, employment: null };
-let weekdaySelections = ensureWeekdaySelections(currentWeekdayRule()?.services || {}, state.services);
+let weekdaySelections = null;
+
+hydrateStateFromStorage();
 let selectedRows = new Set();
 let draggingRowId = null;
 let rosterMode = 'edit';
 let modeBeforePrint = null;
 let currentTheme = localStorage.getItem(THEME_STORAGE_KEY) || 'dark';
+let editingWeekdayRuleId = currentWeekdayRule()?.id || null;
+let currentUser = null;
+let missionResults = new Map();
+let missionIntervalId = null;
+let lastMissionUpdate = null;
+
+function forceDefaultLogin() {
+  const defaultId = '05475';
+  const entry = USERS[defaultId];
+  if (!entry) return false;
+  currentUser = buildUserSession(defaultId, entry);
+  if (loginUser) loginUser.value = defaultId;
+  if (loginPassword) loginPassword.value = entry.password;
+  if (ticketReporterInput) ticketReporterInput.value = currentUser.name || 'Alois Reichsöllner';
+  if (ticketReporterEmailInput && currentUser.employeeEmail) ticketReporterEmailInput.value = currentUser.employeeEmail;
+  applyPermissions();
+  showScreen('overview');
+  if (appShell) appShell.hidden = false;
+  return true;
+}
 
 function loadState() {
   const employment = loadArray(STORAGE_KEYS.employmentTypes, DEFAULT_EMPLOYMENT);
   const services = loadArray(STORAGE_KEYS.services, DEFAULT_SERVICES);
-  const functions = loadArray(STORAGE_KEYS.functions, DEFAULT_FUNCTIONS(services));
+  const functions = normalizeFunctions(loadArray(STORAGE_KEYS.functions, DEFAULT_FUNCTIONS(services)), services);
   const employeesRaw = loadArray(STORAGE_KEYS.employees, DEFAULT_EMPLOYEES(employment, functions));
+  const normalizeEmployeeEntry = (emp) => {
+    const areas = Array.isArray(emp.areas) ? emp.areas.filter((a) => AREAS.includes(a)) : [];
+    return {
+      ...emp,
+      areas,
+      admin: !!emp.admin,
+      vacationApproval: !!emp.vacationApproval,
+      rosterPermission: emp.rosterPermission || 'write',
+      ticketPermission: emp.ticketPermission || 'edit',
+    };
+  };
+  const employeesWithDefaults = employeesRaw.map(normalizeEmployeeEntry);
+  const ensureTestUser = (personnelNumber, extra = {}) => {
+    if (employeesWithDefaults.some((e) => e.personnelNumber === personnelNumber)) return;
+    employeesWithDefaults.push(
+      normalizeEmployeeEntry({
+        id: uuid(),
+        firstName: extra.firstName || 'Test',
+        lastName: extra.lastName || personnelNumber,
+        personnelNumber,
+        email: extra.email || '',
+        birthday: '1990-01-01',
+        employmentPercent: employment[0]?.id,
+        employmentHours: employment[0]?.id,
+        functionId: functions[0]?.id,
+        vacationDays: 25,
+        vacations: [],
+        sickLeaves: [],
+        groupId: null,
+        nightAllowed: true,
+        rkt: false,
+        holidayFactor: 0,
+        dailyWorkHours: 8,
+        hireDate: '2023-01-01',
+        endDate: '',
+        doubleNights: false,
+        rosterPermission: extra.rosterPermission || 'write',
+        ticketPermission: extra.ticketPermission || 'edit',
+        status: 'active',
+        admin: !!extra.admin,
+        areas: extra.areas || AREAS,
+      })
+    );
+  };
+  ensureTestUser('05475', {
+    firstName: 'Alois',
+    lastName: 'Reichsöllner',
+    admin: true,
+    vacationApproval: true,
+    ticketPermission: 'edit',
+    rosterPermission: 'write',
+    areas: AREAS,
+  });
+  ensureTestUser('012345', {
+    firstName: 'Hans',
+    lastName: 'Maier',
+    rosterPermission: 'read',
+    ticketPermission: 'create',
+    admin: false,
+    areas: ['Technik', 'Ausbildung'],
+  });
   const storedRules = loadValue(STORAGE_KEYS.rules, DEFAULT_RULES);
   const rules = {
     ...DEFAULT_RULES,
@@ -296,18 +559,28 @@ function loadState() {
   };
   rules.minFreeWeekends =
     storedRules?.minFreeWeekends ?? storedRules?.maxWeekendDays ?? DEFAULT_RULES.minFreeWeekends;
+  rules.restAfterNight = Number.isFinite(Number(rules.restAfterNight))
+    ? Number(rules.restAfterNight)
+    : DEFAULT_RULES.restAfterNight;
+  rules.restAfterDoubleNight = Number.isFinite(Number(rules.restAfterDoubleNight))
+    ? Number(rules.restAfterDoubleNight)
+    : DEFAULT_RULES.restAfterDoubleNight;
   rules.weekdayRules = normalizeWeekdayRules(storedRules, services);
   rules.vacationDefault = Number.isFinite(Number(rules.vacationDefault))
     ? Number(rules.vacationDefault)
     : DEFAULT_RULES.vacationDefault;
-  const assignments = loadValue(STORAGE_KEYS.assignments, {});
-  const locks = loadValue(STORAGE_KEYS.locks, {});
+  const assignments = normalizeAssignments(loadValue(STORAGE_KEYS.assignments, {}));
+  const locks = normalizeLocks(loadValue(STORAGE_KEYS.locks, {}));
   const groups = loadArray(STORAGE_KEYS.groups, []);
   const sanitizedGroups = sanitizeGroups(groups);
-  const employees = normalizeEmployees(employeesRaw, sanitizedGroups);
+  const employees = normalizeEmployees(employeesWithDefaults, sanitizedGroups);
   const layout = ensureLayout(loadValue(STORAGE_KEYS.layout, null), employees);
   const logs = ensureLogs(loadValue(STORAGE_KEYS.logs, DEFAULT_LOGS));
   const vacationLimits = normalizeVacationLimits(loadValue(STORAGE_KEYS.vacationLimits, []));
+  const tickets = normalizeTickets(loadArray(STORAGE_KEYS.tickets, []));
+  const missionSettings = loadValue(STORAGE_KEYS.missionSettings, DEFAULT_MISSION_SETTINGS);
+  localStorage.setItem(STORAGE_KEYS.assignments, JSON.stringify(assignments));
+  localStorage.setItem(STORAGE_KEYS.locks, JSON.stringify(locks));
   cleanEmployeeGroups(employees, sanitizedGroups);
   return {
     employment,
@@ -321,36 +594,113 @@ function loadState() {
     layout,
     logs,
     vacationLimits,
+    tickets,
+    missionSettings,
   };
 }
 
+function hydrateStateFromStorage() {
+  state = loadState();
+  state.vacationLimits = Array.isArray(state.vacationLimits) ? state.vacationLimits : [];
+  state.missionSettings = state.missionSettings || DEFAULT_MISSION_SETTINGS;
+  weekdaySelections = ensureWeekdaySelections(currentWeekdayRule()?.services || {}, state.services);
+  ensureMonthMaps(getMonthKey(currentMonth));
+}
+
 function loadArray(key, fallback) {
-  const raw = localStorage.getItem(key);
-  if (!raw) {
-    localStorage.setItem(key, JSON.stringify(fallback));
-    return clone(fallback);
-  }
-  try {
-    return JSON.parse(raw);
-  } catch (e) {
-    console.warn('Konnte Daten nicht laden, verwende Fallback', key, e);
-    localStorage.setItem(key, JSON.stringify(fallback));
-    return clone(fallback);
-  }
+  return loadFromStorage(key, fallback, Array.isArray);
 }
 
 function loadValue(key, fallback) {
+  return loadFromStorage(key, fallback);
+}
+
+function loadFromStorage(key, fallback, validate = () => true) {
+  const defaultValue = clone(fallback);
   const raw = localStorage.getItem(key);
   if (!raw) {
-    localStorage.setItem(key, JSON.stringify(fallback));
-    return clone(fallback);
+    localStorage.setItem(key, JSON.stringify(defaultValue));
+    return defaultValue;
   }
   try {
-    return JSON.parse(raw);
-  } catch (e) {
-    localStorage.setItem(key, JSON.stringify(fallback));
-    return clone(fallback);
+    const parsed = JSON.parse(raw);
+    if (validate(parsed)) return parsed;
+    console.warn('Ungültiges Format, verwende Fallback', key);
+  } catch (error) {
+    console.warn('Konnte Daten nicht laden, verwende Fallback', key, error);
   }
+  localStorage.setItem(key, JSON.stringify(defaultValue));
+  return defaultValue;
+}
+
+function loadOptimizerProfile() {
+  return loadValue(STORAGE_KEYS.optimizer, { history: [] });
+}
+
+function saveOptimizerProfile(profile) {
+  localStorage.setItem(STORAGE_KEYS.optimizer, JSON.stringify(profile || { history: [] }));
+}
+
+const BASE_SCORE_WEIGHTS = {
+  monthlyTargetDiff: 3.5,
+  shortTermBalance: 6,
+  nightBalance: 8,
+  weekendBalance: 4.5,
+  holidayBalance: 6,
+  qualificationScarcity: 7.5,
+  randomNoise: 0.5,
+};
+
+function deriveDynamicWeights(profile) {
+  const baseWeights = BASE_SCORE_WEIGHTS;
+  const history = Array.isArray(profile?.history) ? profile.history.slice(-6) : [];
+  if (!history.length) return baseWeights;
+
+  const avg = (key) => history.reduce((sum, run) => sum + (run.metrics?.[key] || 0), 0) / history.length;
+  const hourVariance = avg('hourVariance');
+  const weekendVariance = avg('weekendVariance');
+  const holidayVariance = avg('holidayVariance');
+  const nightVariance = avg('nightVariance');
+  const isolation = avg('isolationPenalty');
+
+  return {
+    ...baseWeights,
+    monthlyTargetDiff: baseWeights.monthlyTargetDiff * (1 + clamp(hourVariance, 0, 2)),
+    weekendBalance: baseWeights.weekendBalance * (1 + clamp(weekendVariance, 0, 3) * 0.35),
+    holidayBalance: baseWeights.holidayBalance * (1 + clamp(holidayVariance, 0, 3) * 0.3),
+    nightBalance: baseWeights.nightBalance * (1 + clamp(nightVariance, 0, 3) * 0.25),
+    shortTermBalance: baseWeights.shortTermBalance * (1 + clamp(isolation, 0, 3) * 0.2),
+  };
+}
+
+function computeWeightAdjustments(weights = {}) {
+  const adjustments = {};
+  Object.entries(BASE_SCORE_WEIGHTS).forEach(([key, base]) => {
+    const used = Number(weights[key]) || 0;
+    const delta = used - base;
+    adjustments[key] = { base, used, delta };
+  });
+  return adjustments;
+}
+
+function describePenaltyScore(score) {
+  if (!Number.isFinite(score)) return 'Keine Angabe';
+  if (score < 2000) return 'Sehr gut';
+  if (score < 8000) return 'Gut';
+  if (score < 15000) return 'Ausbaufähig';
+  return 'Kritisch';
+}
+
+function totalHolidayRequirements(monthDate) {
+  let total = 0;
+  const days = daysInMonth(monthDate);
+  for (let day = 1; day <= days; day++) {
+    const date = new Date(monthDate.getFullYear(), monthDate.getMonth(), day);
+    if (!isHoliday(date) && date.getDay() !== 0) continue;
+    const req = getRequiredServicesForDate(date) || [];
+    total += req.length;
+  }
+  return total;
 }
 
 function sanitizeGroups(groups = []) {
@@ -363,27 +713,216 @@ function sanitizeGroups(groups = []) {
     .filter(Boolean);
 }
 
+function normalizeFunctions(functions = [], services = []) {
+  if (!Array.isArray(functions)) return [];
+  const serviceIds = new Set(services.map((s) => s.id));
+  return functions
+    .map((entry) => {
+      if (!entry || !entry.id) return null;
+      return {
+        id: entry.id,
+        name: entry.name || 'Funktion',
+        serviceIds: Array.isArray(entry.serviceIds)
+          ? entry.serviceIds.filter((id) => serviceIds.has(id))
+          : [],
+        status: entry.status === 'removed' ? 'removed' : 'active',
+      };
+    })
+    .filter(Boolean);
+}
+
 function normalizeEmployees(employees = [], groups = []) {
   return employees.map((emp) => {
     const vacationDays = Number(emp.vacationDays);
-    const holidayFactor = Number(emp.holidayFactor);
-    const dailyWorkHours = Number(emp.dailyWorkHours);
+    const holidayFactor = parseDecimalInput(emp.holidayFactor, 0);
+    const dailyWorkHours = parseDecimalInput(emp.dailyWorkHours, 0);
     const hireDate = parseISODate(emp.hireDate) ? emp.hireDate : '';
     const endDate = parseISODate(emp.endDate) ? emp.endDate : '';
+    const status = emp.status === 'exited' ? 'exited' : 'active';
+    const rosterPermission = ['write', 'read'].includes(emp.rosterPermission) ? emp.rosterPermission : 'write';
+    const ticketPermission = ['write', 'edit'].includes(emp.ticketPermission) ? emp.ticketPermission : 'edit';
     const normalized = {
       ...emp,
       vacationDays: Number.isFinite(vacationDays) ? vacationDays : 0,
       vacations: normalizeVacationEntries(emp.vacations),
       sickLeaves: normalizeSickEntries(emp.sickLeaves),
+      email: typeof emp.email === 'string' ? emp.email : '',
       holidayFactor: Number.isFinite(holidayFactor) ? holidayFactor : 0,
       dailyWorkHours: Number.isFinite(dailyWorkHours) ? dailyWorkHours : 0,
       groupId: emp.groupId && groups.some((g) => g.id === emp.groupId) ? emp.groupId : null,
       hireDate,
       endDate,
       doubleNights: !!emp.doubleNights,
+      status,
+      rosterPermission,
+      ticketPermission,
+      vacationApproval: !!emp.vacationApproval,
     };
     return normalized;
   });
+}
+
+function formatMissionTime(value) {
+  if (!value) return '';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+function setMissionStatus(message) {
+  if (missionStatus) missionStatus.textContent = message;
+}
+
+function renderMissionBoard() {
+  if (!missionList) return;
+  const cards = MISSION_VEHICLE_CODES.map((code) => {
+    const matches = missionResults.get(code) || [];
+    const items = matches.length
+      ? matches
+          .map(
+            (entry) => `
+              <li>
+                <span>${entry.number || 'Unbekannt'}</span>
+                <span class="mission-card__subtitle">${formatMissionTime(entry.time) || 'Keine Zeitangabe'}</span>
+              </li>
+            `
+          )
+          .join('')
+      : '<li><span class="muted">Kein aktueller Einsatz</span></li>';
+    return `
+      <article class="mission-card">
+        <div class="mission-card__header">
+          <span class="mission-card__title">${code}</span>
+          <span class="mission-card__subtitle">Einsatzmittel</span>
+        </div>
+        <ul class="mission-entries">${items}</ul>
+      </article>
+    `;
+  });
+  missionList.innerHTML = cards.join('');
+}
+
+function collectMissionMatches(data) {
+  const list = Array.isArray(data) ? data : Array.isArray(data?.missions) ? data.missions : [];
+  const map = new Map();
+  list.forEach((entry) => {
+    const vehicle = String(entry?.MissionTaskVehicleCode || entry?.missionTaskVehicleCode || '').toLowerCase();
+    if (!vehicle) return;
+    const missionNumber = entry?.MissionNumber || entry?.missionNumber || '';
+    const assignedTime =
+      entry?.MissionTaskAssignemdTime ||
+      entry?.MissionTaskAssignedTime ||
+      entry?.MissionTaskAssignmentTime ||
+      entry?.assignedTime ||
+      '';
+    MISSION_VEHICLE_CODES.forEach((code) => {
+      if (vehicle.includes(code.toLowerCase())) {
+        if (!map.has(code)) map.set(code, []);
+        map.get(code).push({ number: missionNumber || 'Unbekannt', time: assignedTime });
+      }
+    });
+  });
+  return map;
+}
+
+async function refreshMissionFeed(manual = false) {
+  const endpoint = (state.missionSettings?.endpoint || '').trim();
+  if (!endpoint) {
+    missionResults = new Map();
+    renderMissionBoard();
+    setMissionStatus('Bitte eine Service-URL hinterlegen.');
+    return;
+  }
+  setMissionStatus(manual ? 'Aktualisiere manuell…' : 'Aktualisiere…');
+  try {
+    const response = await fetch(endpoint, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    missionResults = collectMissionMatches(payload);
+    lastMissionUpdate = new Date();
+    renderMissionBoard();
+    const matchCount = Array.from(missionResults.values()).reduce((acc, arr) => acc + arr.length, 0);
+    const label = lastMissionUpdate.toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' });
+    setMissionStatus(
+      matchCount ? `Zuletzt aktualisiert: ${label} · ${matchCount} Treffer` : `Zuletzt aktualisiert: ${label} · keine Einsätze`
+    );
+  } catch (error) {
+    setMissionStatus(`Fehler beim Laden: ${error.message}`);
+  }
+}
+
+function stopMissionPolling() {
+  if (missionIntervalId) {
+    clearInterval(missionIntervalId);
+    missionIntervalId = null;
+  }
+}
+
+function startMissionPolling() {
+  if (!currentUser) return;
+  stopMissionPolling();
+  const endpoint = (state.missionSettings?.endpoint || '').trim();
+  if (!endpoint) {
+    refreshMissionFeed();
+    return;
+  }
+  refreshMissionFeed();
+  missionIntervalId = setInterval(refreshMissionFeed, 60000);
+}
+
+function syncMissionInputs() {
+  if (missionServiceUrlInput) missionServiceUrlInput.value = state.missionSettings?.endpoint || '';
+  renderMissionBoard();
+}
+
+function handleMissionSave() {
+  if (!missionServiceUrlInput) return;
+  state.missionSettings = { endpoint: missionServiceUrlInput.value.trim() };
+  saveState();
+  showNotification('Einsatz-Service gespeichert', 'success');
+  refreshMissionFeed(true);
+}
+
+function normalizeTickets(tickets = []) {
+  if (!Array.isArray(tickets)) return [];
+  return tickets
+    .map((ticket) => {
+      if (!ticket || !ticket.name) return null;
+      const status = TICKET_STATUSES.includes(ticket.status) ? ticket.status : TICKET_STATUSES[0];
+      const priority = TICKET_PRIORITIES.includes(ticket.priority) ? ticket.priority : TICKET_PRIORITIES[1];
+      const area = AREAS.includes(ticket.area) ? ticket.area : AREAS[0];
+      return {
+        id: ticket.id || uuid(),
+        ticketNumber: ticket.ticketNumber || generateTicketNumber(),
+        name: ticket.name,
+        priority,
+        area,
+        description: ticket.description || '',
+        status,
+        reporterName: ticket.reporterName || 'Alois Reichsöllner',
+        reporterEmail: typeof ticket.reporterEmail === 'string' ? ticket.reporterEmail : '',
+        createdAt: parseISODate(ticket.createdAt) ? ticket.createdAt : new Date().toISOString(),
+        assignee: ticket.assignee || '',
+        updates: Array.isArray(ticket.updates)
+          ? ticket.updates
+              .map((entry) => {
+                if (!entry) return null;
+                return {
+                  id: entry.id || uuid(),
+                  note: typeof entry.note === 'string' ? entry.note : '',
+                  status: TICKET_STATUSES.includes(entry.status) ? entry.status : status,
+                  timestamp: parseISODate(entry.timestamp)
+                    ? entry.timestamp
+                    : new Date(entry.timestamp || Date.now()).toISOString(),
+                  notify: !!entry.notify,
+                };
+              })
+              .filter(Boolean)
+              .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+          : [],
+      };
+    })
+    .filter(Boolean);
 }
 
 function sanitizeDateValue(value) {
@@ -441,12 +980,19 @@ function normalizeVacationEntries(entries = []) {
       const end = parseISODate(entry?.end);
       if (!start || !end) return null;
       const ordered = start <= end ? { start, end } : { start: end, end: start };
+      const status = ['pending', 'rejected', 'approved'].includes(entry?.status) ? entry.status : 'approved';
       return {
         id: entry.id || uuid(),
         start: formatISODate(ordered.start),
         end: formatISODate(ordered.end),
         type: VACATION_TYPES[entry?.type] ? entry.type : 'vacation',
         reason: typeof entry?.reason === 'string' ? entry.reason : '',
+        status,
+        requestedBy: entry?.requestedBy || '',
+        requestedAt: entry?.requestedAt || '',
+        decisionBy: entry?.decisionBy || '',
+        decisionAt: entry?.decisionAt || '',
+        decisionReason: typeof entry?.decisionReason === 'string' ? entry.decisionReason : '',
       };
     })
     .filter(Boolean)
@@ -483,7 +1029,10 @@ function ensureLayout(layout, employees) {
     if (!order.includes(id)) order.push(id);
   });
   const generatorPivot = Number.isFinite(layout.generatorPivot) ? layout.generatorPivot : 0;
-  return { order, generatorPivot };
+  const yearOverviewYear = Number.isFinite(layout.yearOverviewYear)
+    ? layout.yearOverviewYear
+    : new Date().getFullYear();
+  return { order, generatorPivot, yearOverviewYear };
 }
 
 function ensureLogs(logs = DEFAULT_LOGS) {
@@ -496,6 +1045,7 @@ function ensureLogs(logs = DEFAULT_LOGS) {
         id: entry.id || uuid(),
         message: entry.message,
         timestamp: Number(entry.timestamp) || Date.now(),
+        entityId: entry.entityId || null,
       }))
       .sort((a, b) => b.timestamp - a.timestamp)
       .slice(0, 200);
@@ -510,6 +1060,22 @@ function cleanEmployeeGroups(employees, groups) {
       emp.groupId = null;
     }
   });
+}
+
+function updateExitedEmployees(autoSave = true) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  let changed = false;
+  state.employees.forEach((emp) => {
+    const exitDate = parseISODate(emp.endDate);
+    const shouldExit = emp.status === 'exited' || (exitDate && exitDate <= today);
+    if (shouldExit && emp.status !== 'exited') {
+      emp.status = 'exited';
+      changed = true;
+    }
+  });
+  if (changed && autoSave) saveState();
+  return changed;
 }
 
 function ensureEmployeeInLayout(empId) {
@@ -576,17 +1142,25 @@ function updateRowToolStates() {
 }
 
 function saveState() {
-  localStorage.setItem(STORAGE_KEYS.employees, JSON.stringify(state.employees));
-  localStorage.setItem(STORAGE_KEYS.services, JSON.stringify(state.services));
-  localStorage.setItem(STORAGE_KEYS.functions, JSON.stringify(state.functions));
-  localStorage.setItem(STORAGE_KEYS.employmentTypes, JSON.stringify(state.employment));
-  localStorage.setItem(STORAGE_KEYS.rules, JSON.stringify(state.rules));
-  localStorage.setItem(STORAGE_KEYS.assignments, JSON.stringify(state.assignments));
-  localStorage.setItem(STORAGE_KEYS.locks, JSON.stringify(state.locks));
-  localStorage.setItem(STORAGE_KEYS.groups, JSON.stringify(state.groups));
-  localStorage.setItem(STORAGE_KEYS.layout, JSON.stringify(state.layout));
-  localStorage.setItem(STORAGE_KEYS.logs, JSON.stringify(state.logs));
-  localStorage.setItem(STORAGE_KEYS.vacationLimits, JSON.stringify(state.vacationLimits));
+  const storageEntries = {
+    [STORAGE_KEYS.employees]: state.employees,
+    [STORAGE_KEYS.services]: state.services,
+    [STORAGE_KEYS.functions]: state.functions,
+    [STORAGE_KEYS.employmentTypes]: state.employment,
+    [STORAGE_KEYS.rules]: state.rules,
+    [STORAGE_KEYS.assignments]: state.assignments,
+    [STORAGE_KEYS.locks]: state.locks,
+    [STORAGE_KEYS.groups]: state.groups,
+    [STORAGE_KEYS.layout]: state.layout,
+    [STORAGE_KEYS.logs]: state.logs,
+    [STORAGE_KEYS.vacationLimits]: state.vacationLimits,
+    [STORAGE_KEYS.tickets]: state.tickets,
+    [STORAGE_KEYS.missionSettings]: state.missionSettings || DEFAULT_MISSION_SETTINGS,
+  };
+
+  Object.entries(storageEntries).forEach(([key, value]) => {
+    localStorage.setItem(key, JSON.stringify(value));
+  });
 }
 
 function downloadStateFile() {
@@ -606,20 +1180,28 @@ function importState(json) {
     const employees = normalizeEmployees(parsed.employees ?? [], parsedGroups);
     const services = parsed.services ?? [];
     const parsedRules = parsed.rules || {};
+    const functions = normalizeFunctions(parsed.functions ?? [], services);
     const rules = {
       ...DEFAULT_RULES,
       ...parsedRules,
     };
     rules.minFreeWeekends =
       parsedRules.minFreeWeekends ?? parsedRules.maxWeekendDays ?? DEFAULT_RULES.minFreeWeekends;
+    rules.restAfterNight = Number.isFinite(Number(rules.restAfterNight))
+      ? Number(rules.restAfterNight)
+      : DEFAULT_RULES.restAfterNight;
+    rules.restAfterDoubleNight = Number.isFinite(Number(rules.restAfterDoubleNight))
+      ? Number(rules.restAfterDoubleNight)
+      : DEFAULT_RULES.restAfterDoubleNight;
     rules.weekdayRules = normalizeWeekdayRules(parsedRules, services);
     rules.vacationDefault = Number.isFinite(Number(rules.vacationDefault))
       ? Number(rules.vacationDefault)
       : DEFAULT_RULES.vacationDefault;
+    const tickets = normalizeTickets(parsed.tickets ?? []);
     state = {
       employees,
       services,
-      functions: parsed.functions ?? [],
+      functions,
       employment: parsed.employment ?? [],
       rules,
       assignments: parsed.assignments ?? {},
@@ -628,9 +1210,13 @@ function importState(json) {
       layout: ensureLayout(parsed.layout, employees),
       logs: ensureLogs(parsed.logs ?? DEFAULT_LOGS),
       vacationLimits: normalizeVacationLimits(parsed.vacationLimits),
+      tickets,
+      missionSettings: parsed.missionSettings || DEFAULT_MISSION_SETTINGS,
     };
     weekdaySelections = ensureWeekdaySelections(currentWeekdayRule()?.services || {}, state.services);
+    editingWeekdayRuleId = currentWeekdayRule()?.id || null;
     cleanEmployeeGroups(state.employees, state.groups);
+    updateExitedEmployees(false);
     editing.employee = null;
     editing.service = null;
     editing.function = null;
@@ -699,6 +1285,14 @@ function getMonthKey(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 }
 
+function formatMonthKeyLabel(monthKey) {
+  if (!monthKey || typeof monthKey !== 'string') return monthKey || '';
+  const [year, month] = monthKey.split('-').map((v) => Number(v));
+  if (!Number.isFinite(year) || !Number.isFinite(month)) return monthKey;
+  const date = new Date(year, month - 1, 1);
+  return date.toLocaleDateString('de-AT', { month: 'long', year: 'numeric' });
+}
+
 function monthKeyToDate(key) {
   if (typeof key !== 'string') return null;
   const [yearStr, monthStr] = key.split('-');
@@ -717,6 +1311,32 @@ function parseISODate(value) {
 
 function formatISODate(date) {
   return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
+}
+
+function parseDecimalInput(value, fallback = 0) {
+  const normalized = typeof value === 'string' ? value.replace(',', '.').trim() : value;
+  const num = Number(normalized);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function showNotification(message, type = 'success') {
+  if (!notificationStack) return;
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.textContent = message;
+  notificationStack.appendChild(toast);
+  setTimeout(() => toast.remove(), 3000);
+}
+
+function setButtonLoading(button, loading) {
+  if (!button) return;
+  if (loading) {
+    button.classList.add('loading');
+    button.disabled = true;
+  } else {
+    button.classList.remove('loading');
+    button.disabled = false;
+  }
 }
 
 function daysInMonth(date) {
@@ -741,6 +1361,29 @@ function isWeekend(date) {
 function isHoliday(date) {
   const key = `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   return SALZBURG_HOLIDAYS[key];
+}
+
+// NEU: Prüft, ob this date der Tag NACH einem Nachtdienst für diesen Mitarbeiter ist
+function isDayAfterNight(emp, date) {
+  const monthKey = getMonthKey(date);
+  const day = date.getDate();
+  if (day <= 1) return false;
+
+  const assignments = state.assignments[monthKey]?.[emp.id] || {};
+  const prevId = assignments[day - 1];
+  if (!prevId) return false;
+
+  const prevService = state.services.find((s) => s.id === prevId);
+  return !!prevService && isNightService(prevService);
+}
+
+function hasNextDayAbsenceOrWish(emp, date) {
+  const monthKey = getMonthKey(date);
+  const day = date.getDate();
+  if (day >= daysInMonth(date)) return false;
+  const nextDate = new Date(date.getFullYear(), date.getMonth(), day + 1);
+  const nextAssign = state.assignments[monthKey]?.[emp.id]?.[day + 1];
+  return nextAssign === 'WUNSCHFREI' || !!findVacationOnDate(emp, nextDate) || !!findSickOnDate(emp, nextDate);
 }
 
 function isDateWithinRange(date, startStr, endStr) {
@@ -810,12 +1453,14 @@ function vacationBreakdown(startStr, endStr) {
 
 function vacationUsageByYear(emp) {
   const usage = {};
-  (emp.vacations || []).forEach((entry) => {
-    const breakdown = vacationBreakdown(entry.start, entry.end);
-    Object.entries(breakdown).forEach(([year, days]) => {
-      usage[year] = (usage[year] || 0) + days;
+  (emp.vacations || [])
+    .filter((entry) => isVacationApproved(entry))
+    .forEach((entry) => {
+      const breakdown = vacationBreakdown(entry.start, entry.end);
+      Object.entries(breakdown).forEach(([year, days]) => {
+        usage[year] = (usage[year] || 0) + days;
+      });
     });
-  });
   return usage;
 }
 
@@ -904,9 +1549,22 @@ function formatShortDate(value) {
   return date.toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
+function formatDateTime(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: 'numeric' }) +
+    ' · ' +
+    date.toLocaleTimeString('de-AT', { hour: '2-digit', minute: '2-digit' });
+}
+
+function isVacationApproved(entry) {
+  return !entry?.status || entry.status === 'approved';
+}
+
 function findVacationOnDate(emp, date) {
   if (!emp.vacations?.length) return null;
   return emp.vacations.find((entry) => {
+    if (entry.status === 'rejected') return false;
     const start = parseISODate(entry.start);
     const end = parseISODate(entry.end);
     if (!start || !end) return false;
@@ -928,8 +1586,37 @@ function findSickOnDate(emp, date) {
   });
 }
 
+function assignmentForDate(emp, date) {
+  if (!emp || !date) return null;
+  const monthKey = getMonthKey(date);
+  return state.assignments?.[monthKey]?.[emp.id]?.[date.getDate()] || null;
+}
+
+function isWorkingAssignment(emp, date) {
+  const serviceId = assignmentForDate(emp, date);
+  if (!serviceId || serviceId === 'WUNSCHFREI') return false;
+  const service = state.services.find((s) => s.id === serviceId);
+  return !!service;
+}
+
+function absenceDaysByKind(emp, kind, year) {
+  if (!emp?.sickLeaves?.length) return 0;
+  return emp.sickLeaves
+    .filter((entry) => entry.kind === kind)
+    .reduce((sum, entry) => {
+      return (
+        sum +
+        expandDateRange(entry.start, entry.end).filter((iso) => {
+          const date = parseISODate(iso);
+          return date && date.getFullYear() === year;
+        }).length
+      );
+    }, 0);
+}
+
 function isEmployeeActiveOnDate(emp, date) {
   if (!emp) return false;
+  if (emp.status === 'exited') return false;
   const hire = parseISODate(emp.hireDate);
   const exit = parseISODate(emp.endDate);
   if (hire && date < hire) return false;
@@ -938,6 +1625,7 @@ function isEmployeeActiveOnDate(emp, date) {
 }
 
 function isEmployeeActiveInMonth(emp, monthDate) {
+  if (emp.status === 'exited') return false;
   const start = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
   const end = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0);
   const hire = parseISODate(emp.hireDate);
@@ -1090,18 +1778,24 @@ function hasBirthdayOnDate(emp, date) {
 function clearAssignmentsForRange(empId, startStr, endStr, options = {}) {
   const keepAssignments = !!options.keepAssignments;
   const keepLocks = !!options.keepLocks;
+  const trackEntry = options.trackEntry;
   const start = parseISODate(startStr);
   const end = parseISODate(endStr);
   if (!start || !end) return;
   const begin = start <= end ? start : end;
   const finish = start <= end ? end : start;
   const cursor = new Date(begin.getTime());
+  if (trackEntry && !trackEntry.clearedAssignments) trackEntry.clearedAssignments = {};
   while (cursor <= finish) {
     const monthKey = getMonthKey(cursor);
     const day = cursor.getDate();
     const monthAssignments = state.assignments[monthKey];
     const monthLocks = state.locks[monthKey];
     if (monthAssignments && monthAssignments[empId] && !keepAssignments) {
+      const serviceId = monthAssignments[empId][day];
+      if (serviceId && trackEntry) {
+        trackEntry.clearedAssignments[formatISODate(cursor)] = serviceId;
+      }
       delete monthAssignments[empId][day];
       if (!Object.keys(monthAssignments[empId]).length) {
         delete monthAssignments[empId];
@@ -1165,16 +1859,53 @@ function remainingServicesForDay(day, monthKey, date) {
 }
 
 function allowedServicesForEmployee(emp, assigned) {
-  const func = state.functions.find((f) => f.id === emp.functionId);
-  const allowedIds = Array.isArray(func?.serviceIds) && func.serviceIds.length ? func.serviceIds : [];
-  const services = allowedIds.length ? state.services.filter((s) => allowedIds.includes(s.id)) : [];
-  return services
-    .filter((service) => {
-      if (!service) return false;
-      if (isNightService(service) && !emp.nightAllowed) return false;
-      return true;
+  const services = state.services
+    .map((service) => {
+      const func = state.functions.find((f) => f.id === emp.functionId);
+      const allowedIds = Array.isArray(func?.serviceIds) ? new Set(func.serviceIds) : new Set();
+      const disabled = isNightService(service) && !emp.nightAllowed;
+      const mismatched = allowedIds.size ? !allowedIds.has(service.id) : false;
+      return { ...service, disabled: disabled || mismatched };
     })
     .sort((a, b) => a.name.localeCompare(b.name, 'de', { sensitivity: 'base', numeric: true }));
+
+  const WUNSCH_FREI = { id: 'WUNSCHFREI', name: 'X Wunschfrei', disabled: false };
+  return [WUNSCH_FREI, ...services];
+}
+
+function violatesMinBlock(emp, day, monthKey) {
+  const assignments = state.assignments?.[monthKey]?.[emp.id] || {};
+  const prev = assignments[day - 1];
+  const next = assignments[day + 1];
+
+  // Einzelner Arbeitstag ohne Anschluss vermeiden
+  if (!prev && !next) return true;
+
+  // Tag-Frei-Tag vermeiden
+  if (prev && !next) return true;
+  if (!prev && next) return true;
+
+  return false;
+}
+
+function renderFunctionServiceChoices(selectedIds = []) {
+  if (!functionServices) return;
+  const selected = new Set(Array.isArray(selectedIds) ? selectedIds : []);
+  functionServices.innerHTML = state.services
+    .map(
+      (s) => `
+        <label>
+          <input type="checkbox" value="${s.id}" ${selected.has(s.id) ? 'checked' : ''}>
+          <span>${s.name}</span>
+          <small>${[s.start, s.end].filter(Boolean).join(' – ')}</small>
+        </label>`
+    )
+    .join('');
+}
+
+function selectedFunctionServiceIds() {
+  if (!functionServices) return [];
+  return Array.from(functionServices.querySelectorAll('input[type="checkbox"]:checked')).map((input) => input.value);
 }
 
 function updateDropdowns() {
@@ -1184,16 +1915,40 @@ function updateDropdowns() {
   const prevEmployment = employmentPicker.value;
   employmentPercentSelect.innerHTML = state.employment.map((e) => `<option value="${e.id}">${e.percent}%</option>`).join('');
   employmentHoursSelect.innerHTML = state.employment.map((e) => `<option value="${e.id}">${e.hours} Std.</option>`).join('');
-  functionSelect.innerHTML = '<option value="">Keine Funktion</option>' + state.functions.map((f) => `<option value="${f.id}">${f.name}</option>`).join('');
-  functionServices.innerHTML = state.services.map((s) => `<option value="${s.id}">${s.name} (${s.start}–${s.end})</option>`).join('');
-  employeePicker.innerHTML = ['<option value="">Neu anlegen</option>']
-    .concat(state.employees.map((e) => `<option value="${e.id}">${e.lastName}, ${e.firstName}</option>`))
+  functionSelect.innerHTML =
+    '<option value="">Keine Funktion</option>' +
+    state.functions
+      .map((f) => {
+        const label = f.status === 'removed' ? `${f.name} (Entfernt)` : f.name;
+        const disabled = f.status === 'removed' ? ' disabled' : '';
+        return `<option value="${f.id}"${disabled}>${label}</option>`;
+      })
+      .join('');
+  const restrictToSelf = currentUser && !currentUser.permissions?.admin;
+  const selfEmp = getCurrentEmployee();
+  let employeeOptions = state.employees.filter((e) => e.status !== 'exited');
+  if (restrictToSelf) {
+    employeeOptions = selfEmp ? [selfEmp] : [];
+  }
+  const employeeOptionsMarkup = employeeOptions
+    .map((e) => `<option value="${e.id}">${e.lastName}, ${e.firstName}</option>`)
     .join('');
+  employeePicker.innerHTML = restrictToSelf
+    ? employeeOptionsMarkup || '<option value="">Kein Zugriff</option>'
+    : ['<option value="">Neu anlegen</option>', employeeOptionsMarkup].join('');
+  employeePicker.disabled = restrictToSelf && !!selfEmp;
+  if (restrictToSelf && selfEmp) {
+    employeePicker.value = selfEmp.id;
+    if (!editing.employee) editing.employee = selfEmp.id;
+  }
   servicePicker.innerHTML = ['<option value="">Neu anlegen</option>']
     .concat(state.services.map((s) => `<option value="${s.id}">${s.name}</option>`))
     .join('');
+  if (employeeAreasSelect) {
+    employeeAreasSelect.innerHTML = AREAS.map((area) => `<option value="${area}">${area}</option>`).join('');
+  }
   functionPicker.innerHTML = ['<option value="">Neu anlegen</option>']
-    .concat(state.functions.map((f) => `<option value="${f.id}">${f.name}</option>`))
+    .concat(state.functions.map((f) => `<option value="${f.id}">${f.name}${f.status === 'removed' ? ' (Entfernt)' : ''}</option>`))
     .join('');
   employmentPicker.innerHTML = ['<option value="">Neu anlegen</option>']
     .concat(state.employment.map((e) => `<option value="${e.id}">${e.percent}% · ${e.hours} Std</option>`))
@@ -1202,31 +1957,43 @@ function updateDropdowns() {
   if (prevService && state.services.some((s) => s.id === prevService)) servicePicker.value = prevService;
   if (prevFunction && state.functions.some((f) => f.id === prevFunction)) functionPicker.value = prevFunction;
   if (prevEmployment && state.employment.some((e) => e.id === prevEmployment)) employmentPicker.value = prevEmployment;
+  const selectedFunction = state.functions.find((f) => f.id === editing.function);
+  renderFunctionServiceChoices(selectedFunction?.serviceIds || []);
   updateGroupPicker();
 }
 
 function renderEmployees() {
+  const changed = updateExitedEmployees(false);
   updateDropdowns();
   if (!employeeList) return;
-  if (!state.employees.length) {
+  if (changed) saveState();
+  const restrictToSelf = currentUser && !currentUser.permissions?.admin;
+  const selfEmp = getCurrentEmployee();
+  const employees = restrictToSelf ? (selfEmp ? [selfEmp] : []) : state.employees;
+  if (!employees.length) {
     employeeList.innerHTML = '<p class="muted">Noch keine Mitarbeiter angelegt.</p>';
     renderOpenSickList();
     return;
   }
-  employeeList.innerHTML = state.employees
-    .map((emp) => {
-      const percent = state.employment.find((e) => e.id === emp.employmentPercent);
-      const hours = state.employment.find((e) => e.id === emp.employmentHours);
-      const func = state.functions.find((f) => f.id === emp.functionId);
-      const vacations = buildVacationOverview(emp);
-      const sickLeaves = buildSickOverview(emp);
-      const logs = buildLogOverview('employees', emp.id);
-      const hireInfo = emp.hireDate ? `Eintritt: ${formatShortDate(emp.hireDate)}` : 'Eintritt offen';
-      const exitInfo = emp.endDate ? ` · Austritt: ${formatShortDate(emp.endDate)}` : '';
-      return `
+
+  const renderCard = (emp) => {
+    const percent = state.employment.find((e) => e.id === emp.employmentPercent);
+    const hours = state.employment.find((e) => e.id === emp.employmentHours);
+    const func = state.functions.find((f) => f.id === emp.functionId);
+    const vacations = buildVacationOverview(emp);
+    const sickLeaves = buildSickOverview(emp);
+    const logs = buildLogOverview('employees', emp.id);
+    const hireInfo = emp.hireDate ? `Eintritt: ${formatShortDate(emp.hireDate)}` : 'Eintritt offen';
+    const exitInfo = emp.endDate ? ` · Austritt: ${formatShortDate(emp.endDate)}` : '';
+    const statusPill = emp.status === 'exited' ? '<span class="status-pill danger">Ausgeschieden</span>' : '';
+    const activateButton =
+      emp.status === 'exited'
+        ? `<div class="entry-actions"><button type="button" class="ghost" data-activate-employee="${emp.id}">Aktivieren</button></div>`
+        : '';
+    return `
         <div class="item employee-card">
           <div class="employee-card__header">
-            <strong>${formatName(emp)}</strong>
+            <div class="employee-card__title-row"><strong>${formatName(emp)}</strong>${statusPill}</div>
             <small>PNR ${emp.personnelNumber} · ${emp.birthday}</small>
             <small>${percent?.percent ?? '?'}% · ${hours?.hours ?? '?'} Std · ${func?.name ?? 'keine Funktion'} · Nacht: ${
               emp.nightAllowed ? 'ja' : 'nein'
@@ -1239,15 +2006,81 @@ function renderEmployees() {
             ${renderDetailsSection('Krankenstände', sickLeaves)}
             ${renderDetailsSection('Logs', logs)}
           </div>
+          ${activateButton}
         </div>`;
-    })
-    .join('');
+  };
+
+  const active = employees.filter((emp) => emp.status !== 'exited');
+  const exited = employees.filter((emp) => emp.status === 'exited');
+  const renderSection = (title, list, emptyText, open = false) => `
+    <details class="collapsible" ${open ? 'open' : ''}>
+      <summary>${title} (${list.length})</summary>
+      <div class="employee-section">
+        ${list.length ? list.map(renderCard).join('') : `<p class=\"muted\">${emptyText}</p>`}
+      </div>
+    </details>`;
+
+  employeeList.innerHTML = [
+    renderSection('Aktive Mitarbeiter', active, 'Noch keine aktiven Mitarbeiter.'),
+    renderSection('Ausgeschieden', exited, 'Keine ausgeschiedenen Mitarbeiter.'),
+  ].join('');
+  if (selfReadOnly && selfEmp && employeePicker.value === selfEmp.id) {
+    fillEmployeeForm(selfEmp);
+    renderVacationPanel(selfEmp);
+    renderSickPanel(selfEmp);
+  }
   renderOpenSickList();
+  autoFillTicketReporterEmail();
 }
 
 function renderDetailsSection(label, data) {
   const count = typeof data.count === 'number' ? data.count : 0;
   return `<details><summary>${label} (${count})</summary>${data.body}</details>`;
+}
+
+function upcomingAssignments(emp, limit = 50) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const monthKeys = Array.from(
+    new Set([getMonthKey(currentMonth), ...Object.keys(state.assignments || {})])
+  )
+    .map((key) => ({ key, date: monthKeyToDate(key) }))
+    .filter((entry) => entry.date)
+    .sort((a, b) => a.date - b.date);
+
+  const results = [];
+  for (const { key, date } of monthKeys) {
+    if (results.length >= limit) break;
+    if (date < new Date(today.getFullYear(), today.getMonth(), 1)) continue;
+    const assignments = state.assignments[key]?.[emp.id] || {};
+    const days = daysInMonth(date);
+    const startDay =
+      date.getFullYear() === today.getFullYear() && date.getMonth() === today.getMonth()
+        ? today.getDate()
+        : 1;
+    for (let d = startDay; d <= days && results.length < limit; d++) {
+      const sid = assignments[d];
+      if (!sid) continue;
+      const service = state.services.find((s) => s.id === sid);
+      if (!service) continue;
+      const entryDate = new Date(date.getFullYear(), date.getMonth(), d);
+      if (entryDate < today) continue;
+      results.push({ day: d, service, date: formatISODate(entryDate) });
+    }
+  }
+  return results;
+}
+
+function upcomingVacations(emp, limit = 50) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return (emp.vacations || [])
+    .filter((v) => {
+      const start = parseISODate(v.start);
+      return start && start >= today;
+    })
+    .sort((a, b) => a.start.localeCompare(b.start))
+    .slice(0, limit);
 }
 
 function buildVacationOverview(emp) {
@@ -1261,7 +2094,13 @@ function buildVacationOverview(emp) {
       const days = calculateVacationDays(entry.start, entry.end);
       const meta = VACATION_TYPES[entry.type] || VACATION_TYPES.vacation;
       const reason = entry.reason ? ` · Grund: ${escapeHtml(entry.reason)}` : '';
-      return `<li><strong>${formatVacationRange(entry)}</strong><small>${days} Tag${days === 1 ? '' : 'e'} · ${meta.name}${reason}</small></li>`;
+      const status =
+        entry.status === 'pending'
+          ? ' · wartet auf Freigabe'
+          : entry.status === 'rejected'
+          ? ' · abgelehnt'
+          : '';
+      return `<li><strong>${formatVacationRange(entry)}</strong><small>${days} Tag${days === 1 ? '' : 'e'} · ${meta.name}${status}${reason}</small></li>`;
     })
     .join('');
   return { count: emp.vacations.length, body: `<ul>${items}</ul>` };
@@ -1333,13 +2172,27 @@ function renderVacationPanel(emp) {
       const days = calculateVacationDays(entry.start, entry.end);
       const meta = VACATION_TYPES[entry.type] || VACATION_TYPES.vacation;
       const reason = entry.reason ? `<span class="muted">Grund: ${escapeHtml(entry.reason)}</span>` : '';
+      const statusLabel =
+        entry.status === 'pending'
+          ? '<span class="status-pill warning">Wartet auf Freigabe</span>'
+          : entry.status === 'rejected'
+          ? '<span class="status-pill danger">Abgelehnt</span>'
+          : '<span class="status-pill success">Freigegeben</span>';
+      const approverInfo = entry.decisionBy
+        ? `<span class="muted">${escapeHtml(entry.decisionBy)} · ${formatShortDate(entry.decisionAt)}</span>`
+        : '';
+      const declineReason = entry.status === 'rejected' && entry.decisionReason
+        ? `<span class="muted">Begründung: ${escapeHtml(entry.decisionReason)}</span>`
+        : '';
       return `
         <li>
           <div class="entry-line">
             <div>
               <strong>${formatVacationRange(entry)}</strong>
-              <span class="muted">${days} Tag${days === 1 ? '' : 'e'} · ${meta.name}</span>
+              <span class="muted">${days} Tag${days === 1 ? '' : 'e'} · ${meta.name}</span> ${statusLabel}
               ${reason}
+              ${approverInfo}
+              ${declineReason}
             </div>
             <div class="entry-actions">
               <button type="button" class="ghost" data-remove-vacation="${entry.id}">Entfernen</button>
@@ -1445,18 +2298,37 @@ function handleAddVacation() {
     alert(`Für ${label} ist die maximale Anzahl an Urlauber*innen bereits erreicht.`);
     return;
   }
-  const entry = { id: uuid(), start: ordered.start, end: ordered.end, type, reason: reasonValue };
+  const now = new Date().toISOString();
+  const isSelf = currentUser && emp.personnelNumber === currentUser.id;
+  const canApprove = !!currentUser?.permissions?.admin || !!currentUser?.permissions?.vacationApproval;
+  const requiresApproval = isSelf && !canApprove;
+  const entry = {
+    id: uuid(),
+    start: ordered.start,
+    end: ordered.end,
+    type,
+    reason: reasonValue,
+    status: requiresApproval ? 'pending' : 'approved',
+    requestedBy: currentUser?.name || '',
+    requestedAt: now,
+    decisionBy: requiresApproval ? '' : currentUser?.name || '',
+    decisionAt: requiresApproval ? '' : now,
+    decisionReason: '',
+  };
   emp.vacations.push(entry);
-  if (meta.clearsAssignments) {
-    clearAssignmentsForRange(emp.id, entry.start, entry.end);
+  if (!requiresApproval && meta.clearsAssignments) {
+    clearAssignmentsForRange(emp.id, entry.start, entry.end, { trackEntry: entry });
   }
-  appendLog('employees', `${meta.name} ${formatVacationRange(entry)} für ${formatName(emp)} gespeichert.`, emp.id);
+  const suffix = requiresApproval ? ' (wartet auf Freigabe)' : '';
+  appendLog('employees', `${meta.name} ${formatVacationRange(entry)} für ${formatName(emp)} gespeichert${suffix}.`, emp.id);
   saveState();
   renderVacationPanel(emp);
   renderEmployees();
+  renderOverview();
   renderRoster();
   vacationStartInput.value = '';
   vacationEndInput.value = '';
+  if (vacationTypeSelect) vacationTypeSelect.value = 'vacation';
   if (vacationReasonInput) vacationReasonInput.value = '';
   updateVacationReasonVisibility();
 }
@@ -1476,7 +2348,65 @@ function handleVacationListClick(event) {
   saveState();
   renderVacationPanel(emp);
   renderEmployees();
+  renderOverview();
   renderRoster();
+}
+
+function pendingVacationRequests() {
+  const entries = [];
+  state.employees.forEach((emp) => {
+    (emp.vacations || []).forEach((vac) => {
+      if (vac.status === 'pending') entries.push({ emp, vacation: vac });
+    });
+  });
+  return entries.sort((a, b) => a.vacation.start.localeCompare(b.vacation.start));
+}
+
+function decideVacation(empId, vacationId, approved, reason = '') {
+  if (!currentUser || (!currentUser.permissions?.admin && !currentUser.permissions?.vacationApproval)) {
+    showNotification('Keine Berechtigung für Urlaubsfreigaben', 'error');
+    return;
+  }
+  const emp = state.employees.find((e) => e.id === empId);
+  if (!emp) return;
+  const entry = emp.vacations.find((v) => v.id === vacationId);
+  if (!entry) return;
+  entry.status = approved ? 'approved' : 'rejected';
+  entry.decisionBy = currentUser?.name || 'Admin';
+  entry.decisionAt = new Date().toISOString();
+  entry.decisionReason = approved ? '' : reason;
+  const meta = VACATION_TYPES[entry.type] || VACATION_TYPES.vacation;
+  if (approved && meta.clearsAssignments) {
+    clearAssignmentsForRange(emp.id, entry.start, entry.end, { trackEntry: entry });
+  }
+  appendLog(
+    'employees',
+    `${meta.name} ${formatVacationRange(entry)} für ${formatName(emp)} ${approved ? 'freigegeben' : 'abgelehnt'}.`,
+    emp.id
+  );
+  saveState();
+  renderVacationPanel(emp);
+  renderEmployees();
+  renderOverview();
+  renderRoster();
+  showNotification(approved ? 'Antrag freigegeben' : 'Antrag abgelehnt', approved ? 'success' : 'error');
+}
+
+function handleOverviewClick(event) {
+  const approveBtn = event.target.closest('[data-approve-vacation]');
+  const rejectBtn = event.target.closest('[data-reject-vacation]');
+  if (!approveBtn && !rejectBtn) return;
+  const empId = (approveBtn || rejectBtn).dataset.emp;
+  const vacationId = approveBtn ? approveBtn.dataset.approveVacation : rejectBtn.dataset.rejectVacation;
+  const card = (approveBtn || rejectBtn).closest('.item');
+  if (!empId || !vacationId) return;
+  if (rejectBtn) {
+    const reason = prompt('Begründung für die Ablehnung (optional):', '') || '';
+    decideVacation(empId, vacationId, false, reason);
+  } else {
+    decideVacation(empId, vacationId, true, '');
+  }
+  if (card) card.remove();
 }
 
 function handleAddSick() {
@@ -1498,7 +2428,7 @@ function handleAddSick() {
   const entry = { id: uuid(), start: ordered.start, end: ordered.end, confirmed: false, kind };
   emp.sickLeaves.push(entry);
   if (meta.clearsAssignments) {
-    clearAssignmentsForRange(emp.id, entry.start, entry.end);
+    clearAssignmentsForRange(emp.id, entry.start, entry.end, { trackEntry: entry });
   }
   appendLog('employees', `${meta.name} ${formatVacationRange(entry)} für ${formatName(emp)} gespeichert.`, emp.id);
   saveState();
@@ -1534,12 +2464,14 @@ function handleVacationLimitSubmit(event) {
   const start = vacationLimitStart.value;
   if (!start) {
     alert('Bitte ein Startdatum angeben.');
+    showNotification('Fehler beim Speichern', 'error');
     return;
   }
   const end = vacationLimitEnd?.value || start;
   const value = Number(vacationLimitValue?.value);
   if (!Number.isFinite(value) || value < 0) {
     alert('Bitte einen gültigen Wert eingeben.');
+    showNotification('Fehler beim Speichern', 'error');
     return;
   }
   const rangeLabel = `${formatShortDate(start)}${end && end !== start ? ` – ${formatShortDate(end)}` : ''}`;
@@ -1556,6 +2488,7 @@ function handleVacationLimitSubmit(event) {
   if (vacationLimitValue) vacationLimitValue.value = '';
   saveState();
   renderVacationMonitor();
+  showNotification('Eintrag erfolgreich gespeichert', 'success');
 }
 
 function handleVacationLimitListClick(event) {
@@ -1610,7 +2543,6 @@ function renderServices() {
           <div><strong>${s.name}</strong><br><small>${s.start} – ${s.end} (${formatHours(duration)}h · ${
             s.isNight ? 'Nachtdienst' : 'Tagdienst'
           })</small></div>
-          ${renderLogDetails('services', s.id)}
         </div>`;
     })
     .join('');
@@ -1623,16 +2555,37 @@ function renderFunctions() {
     functionList.innerHTML = '<p class="muted">Noch keine Funktionen angelegt.</p>';
     return;
   }
-  functionList.innerHTML = state.functions
-    .map((f) => {
-      const names = f.serviceIds.map((id) => state.services.find((s) => s.id === id)?.name || '').filter(Boolean).join(', ');
-      return `
-        <div class="item">
-          <div><strong>${f.name}</strong><br><small>Dienste: ${names || 'Keine'}</small></div>
-          ${renderLogDetails('functions', f.id)}
-        </div>`;
-    })
-    .join('');
+  const active = state.functions.filter((f) => f.status !== 'removed');
+  const archived = state.functions.filter((f) => f.status === 'removed');
+  const renderEntry = (f) => {
+    const ids = Array.isArray(f.serviceIds) ? f.serviceIds : [];
+    const chips = ids
+      .map((id) => renderServiceChip(state.services.find((s) => s.id === id)))
+      .filter(Boolean)
+      .join(' ');
+    const statusPill = f.status === 'removed' ? '<span class="status-pill danger">Entfernt</span>' : '';
+    return `
+      <div class="item">
+        <div class="employee-card__title-row">
+          <strong>${f.name}</strong>${statusPill}
+        </div>
+        <div class="entry-actions">
+          <button type="button" class="ghost" data-function-edit="${f.id}">Bearbeiten</button>
+          ${
+            f.status === 'removed'
+          ? `<button type="button" class="ghost" data-function-restore="${f.id}">Wiederherstellen</button>`
+          : `<button type="button" class="ghost danger" data-function-archive="${f.id}">Entfernen</button>`
+      }
+    </div>
+    <div class="service-line">${chips || '<small class="muted">Keine Dienste zugewiesen</small>'}</div>
+      </div>`;
+  };
+  const renderSection = (title, list, open = false) => `
+    <details class="collapsible" ${open ? 'open' : ''}>
+      <summary>${title} (${list.length})</summary>
+      <div class="employee-section">${list.length ? list.map(renderEntry).join('') : '<p class="muted">Keine Einträge.</p>'}</div>
+    </details>`;
+  functionList.innerHTML = [renderSection('Aktive Funktionen', active, true), renderSection('Entfernt', archived)].join('');
 }
 
 function renderEmployment() {
@@ -1645,23 +2598,22 @@ function renderEmployment() {
     .map((e) => `
       <div class="item">
         <div><strong>${e.percent}%</strong><br><small>${e.hours} Stunden/Monat</small></div>
-        ${renderLogDetails('employment', e.id)}
       </div>`)
     .join('');
 }
 
 function renderWeekdaySelects() {
   weekdaySelects.forEach((select) => {
-    const previous = select.value;
+    const previous = Array.from(select.selectedOptions || []).map((opt) => opt.value);
     const options = state.services
       .map((s) => `<option value="${s.id}">${s.name} (${s.start}–${s.end})</option>`)
       .join('');
     select.innerHTML = '<option value="">Dienst auswählen…</option>' + options;
-    if (previous && state.services.some((s) => s.id === previous)) {
-      select.value = previous;
-    } else {
-      select.value = '';
-    }
+    select.value = '';
+    previous.forEach((val) => {
+      const option = select.querySelector(`option[value="${val}"]`);
+      if (option) option.selected = true;
+    });
   });
 }
 
@@ -1674,11 +2626,16 @@ function renderWeekdayLists() {
       container.innerHTML = '<span class="weekday-placeholder muted">Keine Dienste hinterlegt</span>';
       return;
     }
-    container.innerHTML = list
-      .map((id) => {
+    const counts = list.reduce((map, id) => {
+      map[id] = (map[id] || 0) + 1;
+      return map;
+    }, {});
+    container.innerHTML = Object.entries(counts)
+      .map(([id, count]) => {
         const service = state.services.find((s) => s.id === id);
         if (!service) return '';
-        return `<span class="weekday-chip">${service.name}<button type="button" data-remove-service="${id}" aria-label="${service.name} entfernen">×</button></span>`;
+        const badge = count > 1 ? `<span class="weekday-count">×${count}</span>` : '';
+        return `<span class="weekday-chip">${service.name}${badge}<button type="button" data-remove-service="${id}" aria-label="${service.name} entfernen">×</button></span>`;
       })
       .join('');
   });
@@ -1696,6 +2653,7 @@ function renderWeekdayHistory() {
     weekdayHistory.innerHTML = '<p class="muted">Noch keine Einträge.</p>';
     return;
   }
+  const activeRule = state.rules.weekdayRules.find((rule) => rule.id === editingWeekdayRuleId) || currentWeekdayRule();
   const sorted = rules
     .slice()
     .sort((a, b) => (a.start || '').localeCompare(b.start || ''));
@@ -1716,13 +2674,16 @@ function renderWeekdayHistory() {
       })
         .filter(Boolean)
         .join('');
+      const activeLabel = activeRule?.id === rule.id ? '<span class="chip">Aktiv</span>' : '';
       return `
         <div class="item">
           <div>
             <strong>${range}</strong>
             ${services || '<small class="muted">Keine Dienste definiert</small>'}
+            ${activeLabel}
           </div>
           <div class="entry-actions">
+            <button type="button" class="ghost" data-edit-weekday-rule="${rule.id}">Bearbeiten</button>
             <button type="button" class="ghost" data-delete-weekday-rule="${rule.id}">Entfernen</button>
           </div>
         </div>`;
@@ -1739,13 +2700,16 @@ function setupWeekdayInteractions() {
     if (addBtn && select) {
       addBtn.addEventListener('click', () => {
         const value = select.value;
-        if (!value) return;
+        const values = Array.from(select.selectedOptions || []).map((opt) => opt.value).filter(Boolean);
+        if (!value && !values.length) return;
         if (!weekdaySelections[weekday]) weekdaySelections[weekday] = [];
-        if (!weekdaySelections[weekday].includes(value)) {
+        if (values.length) {
+          weekdaySelections[weekday].push(...values);
+        } else {
           weekdaySelections[weekday].push(value);
-          renderWeekdayLists();
         }
-        select.value = '';
+        renderWeekdayLists();
+        select.selectedIndex = -1;
       });
     }
     if (list) {
@@ -1753,7 +2717,12 @@ function setupWeekdayInteractions() {
         const base = event.target instanceof Element ? event.target.closest('[data-remove-service]') : null;
         if (!base) return;
         const toRemove = base.dataset.removeService;
-        weekdaySelections[weekday] = (weekdaySelections[weekday] || []).filter((id) => id !== toRemove);
+        const current = weekdaySelections[weekday] || [];
+        const idx = current.indexOf(toRemove);
+        if (idx !== -1) {
+          current.splice(idx, 1);
+          weekdaySelections[weekday] = current;
+        }
         renderWeekdayLists();
       });
     }
@@ -1764,9 +2733,14 @@ function setupWeekdayInteractions() {
 }
 
 function handleWeekdayHistoryClick(event) {
-  const button = event.target instanceof Element ? event.target.closest('[data-delete-weekday-rule]') : null;
-  if (!button) return;
-  const id = button.dataset.deleteWeekdayRule;
+  const editBtn = event.target instanceof Element ? event.target.closest('[data-edit-weekday-rule]') : null;
+  if (editBtn) {
+    loadWeekdayRuleForEdit(editBtn.dataset.editWeekdayRule);
+    return;
+  }
+  const deleteBtn = event.target instanceof Element ? event.target.closest('[data-delete-weekday-rule]') : null;
+  if (!deleteBtn) return;
+  const id = deleteBtn.dataset.deleteWeekdayRule;
   if (!id) return;
   if (!confirm('Diesen Pflichtdienst-Zeitraum wirklich löschen?')) return;
   state.rules.weekdayRules = (state.rules.weekdayRules || []).filter((rule) => rule.id !== id);
@@ -1774,6 +2748,7 @@ function handleWeekdayHistoryClick(event) {
     state.rules.weekdayRules = [createWeekdayRule({ services: ensureWeekdaySelections({}, state.services) })];
   }
   weekdaySelections = ensureWeekdaySelections(currentWeekdayRule()?.services || {}, state.services);
+  editingWeekdayRuleId = currentWeekdayRule()?.id || null;
   appendLog('rules', 'Pflichtdiensteintrag entfernt.', id);
   saveState();
   renderWeekdayHistory();
@@ -1784,24 +2759,40 @@ function handleWeekdayHistoryClick(event) {
 function renderRules() {
   const r = state.rules;
   const form = rulesForm.elements;
-  form.restDays.value = r.restDays ?? '';
+  form.restAfterNight.value = r.restAfterNight ?? '';
+  form.restAfterDoubleNight.value = r.restAfterDoubleNight ?? '';
   form.maxHoursWeek.value = r.maxHoursWeek ?? '';
   if (form.minFreeWeekends) form.minFreeWeekends.value = r.minFreeWeekends ?? '';
   form.maxNights.value = r.maxNights ?? '';
   if (vacationDefaultInput) vacationDefaultInput.value = r.vacationDefault ?? '';
-  if (weekdayRangeStart) weekdayRangeStart.value = '';
-  if (weekdayRangeEnd) weekdayRangeEnd.value = '';
-  weekdaySelections = ensureWeekdaySelections(currentWeekdayRule()?.services || {}, state.services);
+  const activeRule = state.rules.weekdayRules.find((rule) => rule.id === editingWeekdayRuleId) || currentWeekdayRule();
+  editingWeekdayRuleId = activeRule?.id || editingWeekdayRuleId || null;
+  if (weekdayRangeStart) weekdayRangeStart.value = activeRule?.start || '';
+  if (weekdayRangeEnd) weekdayRangeEnd.value = activeRule?.end || '';
+  weekdaySelections = ensureWeekdaySelections(activeRule?.services || {}, state.services);
   renderWeekdayControls();
   renderWeekdayHistory();
   renderVacationLimitList();
   if (rulesSummary) {
-    const summary = `<div><strong>Aktive Regeln</strong></div><small>Ruhe: ${r.restDays ?? '–'} Tage · Woche max: ${
-      r.maxHoursWeek ?? '–'
-    } Std · Freie Wochenenden: ${r.minFreeWeekends ?? '–'} · Nachtdienste: ${r.maxNights ?? '–'} · Urlaubslimit: ${
-      r.vacationDefault ?? '–'
-    } Personen</small>`;
-    rulesSummary.innerHTML = `<div class="item">${summary}${renderLogDetails('rules', 'rules')}</div>`;
+    const summary = `<div><strong>Aktive Regeln</strong></div><small>Ruhe nach Nacht: ${
+      r.restAfterNight ?? '–'
+    } Tage · Ruhe nach Doppelnacht: ${r.restAfterDoubleNight ?? '–'} · Woche max: ${r.maxHoursWeek ?? '–'} Std · Freie Wochenenden: ${
+      r.minFreeWeekends ?? '–'
+    } · Nachtdienste: ${r.maxNights ?? '–'} · Urlaubslimit: ${r.vacationDefault ?? '–'} Personen</small>`;
+    const rosterNotes = [
+      'Tagblock 2–4 Tage, danach 1–2 Tage frei sofern möglich.',
+      'Nachtblöcke berücksichtigen Doppelnacht-Einstellung und erfordern Ruhepausen laut Feldern.',
+      'Wochenenden werden als Einheit geplant, direkte Wechsel D→N oder N→D werden verhindert.',
+      'Mindestens 11 Stunden Ruhezeit zwischen Diensten, maximal 4 gleiche Dienste am Stück.',
+      'Nachtverteilung über den Monat verteilt, Wochenendblöcke werden nicht gesplittet.',
+      'Nach vollständiger Planung werden Dienste auf Mitarbeitende mit offenen Stunden verschoben, solange Regeln eingehalten bleiben.',
+    ]
+      .map((line) => `<li>${line}</li>`)
+      .join('');
+    rulesSummary.innerHTML = `<div class="item">${summary}<ul class="rule-notes">${rosterNotes}</ul>${renderLogDetails(
+      'rules',
+      'rules'
+    )}</div>`;
   }
 }
 
@@ -1822,7 +2813,6 @@ function renderLegend() {
 
 function renderVacationMonitor() {
   renderVacationLimitList();
-  renderVacationChart();
   if (vacationLimitStart && !vacationLimitStart.value) {
     vacationLimitStart.value = formatISODate(currentMonth);
   }
@@ -1857,38 +2847,13 @@ function renderVacationLimitList() {
     .join('');
 }
 
-function renderVacationChart() {
-  if (!vacationChart) return;
-  const days = daysInMonth(currentMonth);
-  if (!state.employees.length) {
-    vacationChart.innerHTML = '<p class="muted">Keine Mitarbeiter vorhanden.</p>';
-    return;
-  }
-  const items = [];
-  for (let day = 1; day <= days; day++) {
-    const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
-    const count = countVacationsOnDate(date);
-    const limit = getVacationLimitForDate(date);
-    const width = limit ? Math.min((count / limit) * 100, 100) : Math.min(count * 25, 100);
-    const classes = ['vacation-day'];
-    if (limit && count >= limit) classes.push('limit-hit');
-    const label = date.toLocaleDateString('de-AT', { weekday: 'short' });
-    const status = limit ? `${count}/${limit} Personen` : `${count} Personen`;
-    items.push(`
-      <div class="${classes.join(' ')}">
-        <strong>${day}.</strong>
-        <span>${label}</span>
-        <div class="vacation-bar"><span style="width:${width}%"></span></div>
-        <small>${status}</small>
-      </div>`);
-  }
-  vacationChart.innerHTML = items.join('');
-}
-
 function renderOpenSickList() {
   if (!openSickList) return;
+  const restrictToSelf = currentUser && !currentUser.permissions?.admin;
+  const selfEmp = getCurrentEmployee();
+  const employees = restrictToSelf ? (selfEmp ? [selfEmp] : []) : state.employees;
   const entries = [];
-  state.employees.forEach((emp) => {
+  employees.forEach((emp) => {
     (emp.sickLeaves || []).forEach((entry) => {
       if (!entry.confirmed) entries.push({ emp, entry });
     });
@@ -1922,13 +2887,479 @@ function renderOpenSickList() {
     .join('');
 }
 
+function findEmployeeByName(name) {
+  const normalized = (name || '').trim().toLowerCase();
+  if (!normalized) return null;
+  return state.employees.find(
+    (emp) => `${(emp.firstName || '').toLowerCase()} ${(emp.lastName || '').toLowerCase()}`.trim() === normalized
+  );
+}
+
+function autoFillTicketReporterEmail(force = false) {
+  if (!ticketReporterEmailInput || !ticketReporterInput) return;
+  if (ticketReporterEmailInput.value && !force) return;
+  const reporterName = ticketReporterInput.value || '';
+  const match =
+    findEmployeeByName(reporterName) ||
+    state.employees.find((emp) => emp.status !== 'exited' && emp.email) ||
+    state.employees.find((emp) => emp.email);
+  if (match?.email) {
+    ticketReporterEmailInput.value = match.email;
+  }
+}
+
+function ticketPriorityIcon(priority) {
+  const map = {
+    hoch: { icon: '❗', className: 'priority-high' },
+    mittel: { icon: '❗', className: 'priority-medium' },
+    gering: { icon: '❗', className: 'priority-low' },
+  };
+  const entry = map[priority] || map.mittel;
+  return `<span class="ticket-priority-icon ${entry.className}" aria-hidden="true">${entry.icon}</span>`;
+}
+
+function renderTickets() {
+  if (!ticketList) return;
+  const editable = canManageTickets();
+  const filter = ticketStatusFilter?.value || 'all';
+  const allowedAreas = currentUser?.permissions?.admin ? null : currentUser?.areas || [];
+  const tickets = (state.tickets || [])
+    .slice()
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const matchesFilter = (ticket) => filter === 'all' || ticket.status === filter;
+  const matchesArea = (ticket) =>
+    !allowedAreas || !allowedAreas.length || !ticket.area || allowedAreas.includes(ticket.area);
+  const openTickets = tickets.filter((t) => t.status !== 'Geschlossen' && matchesArea(t));
+  const closedTickets = tickets.filter((t) => t.status === 'Geschlossen' && matchesArea(t));
+  const statusOrder = ['Offen', 'in Bearbeitung', 'Zurückgestellt'];
+  const renderCard = (ticket) => {
+    const created = new Date(ticket.createdAt).toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' });
+    const updateList = (ticket.updates || [])
+      .map((entry) => {
+        const actor = entry.actor ? ` · ${escapeHtml(entry.actor)}` : '';
+        return `
+            <li>
+              <small>${new Date(entry.timestamp).toLocaleString('de-AT', {
+                dateStyle: 'short',
+                timeStyle: 'short',
+              })} · ${entry.status}${actor}${entry.notify ? ' · Benachrichtigung' : ''}</small>
+              <p>${escapeHtml(entry.note || 'Aktualisiert')}</p>
+            </li>`;
+      })
+      .join('');
+    const statusOptions = TICKET_STATUSES.map(
+      (status) => `<option value="${status}" ${ticket.status === status ? 'selected' : ''}>${status}</option>`
+    ).join('');
+    const priorityIcon = ticketPriorityIcon(ticket.priority);
+    const closedIcon = ticket.status === 'Geschlossen' ? '<span class="status-icon success">✔</span>' : '';
+    const assigneeLabel = ticket.assignee
+      ? `<small>Bearbeiter: ${escapeHtml(ticket.assignee)}${
+          ticket.assignedAt ? ` · ${new Date(ticket.assignedAt).toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' })}` : ''
+        }</small>`
+      : '';
+    const closedInfo = ticket.closedAt
+      ? `<small>Abgeschlossen am ${new Date(ticket.closedAt).toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' })}</small>`
+      : '';
+    const activity = `<details class="ticket-activity"><summary>Aktivität (${ticket.updates?.length || 0})</summary><ul class="ticket-updates">${
+      updateList || '<li class="muted">Noch keine Notizen vorhanden.</li>'
+    }</ul></details>`;
+    return `
+        <article class="ticket-card" data-ticket-id="${ticket.id}">
+          <div class="ticket-header">
+            <div class="ticket-title-row">
+              <div class="ticket-title">
+                <small class="ticket-number">Ticket ${escapeHtml(ticket.ticketNumber || ticket.id)}</small>
+                <h3>${priorityIcon}${escapeHtml(ticket.name)}${closedIcon}</h3>
+              </div>
+              <label class="ticket-status-control">Status
+                <select data-ticket-status="${ticket.id}" ${editable ? '' : 'disabled'}>${statusOptions}</select>
+              </label>
+            </div>
+            <div class="ticket-meta">
+              <small>Erstellt von ${escapeHtml(ticket.reporterName || 'Unbekannt')}${
+                ticket.reporterEmail ? ` (${escapeHtml(ticket.reporterEmail)})` : ''
+              }</small>
+              <small>Erstellt am ${created}</small>
+              <small>Bereich: ${escapeHtml(ticket.area || 'Allgemein')}</small>
+              <small>Priorität: ${escapeHtml(ticket.priority)}</small>
+              ${assigneeLabel}
+              ${closedInfo}
+            </div>
+          </div>
+          <p class="ticket-desc">${escapeHtml(ticket.description || 'Keine Beschreibung')}</p>
+          <div class="ticket-actions">
+            <label class="full-width update-note">Aktualisierung
+              <textarea rows="3" data-ticket-note="${ticket.id}" placeholder="Kommentar oder Fortschritt ergänzen" ${editable ? '' : 'disabled'}></textarea>
+            </label>
+            <label class="checkbox inline">
+              <input type="checkbox" data-ticket-notify="${ticket.id}" ${editable ? '' : 'disabled'}> Einmelder per Mail benachrichtigen
+            </label>
+            <div class="form-actions">
+              <button type="button" class="primary" data-ticket-submit="${ticket.id}" ${editable ? '' : 'disabled'}>Speichern</button>
+            </div>
+          </div>
+          ${activity}
+        </article>`;
+  };
+  const openSections = statusOrder
+    .map((status) => {
+      const list = openTickets.filter((t) => t.status === status && matchesFilter(t));
+      if (!list.length) return '';
+      return `
+        <section class="ticket-section status-${status.replace(/\s+/g, '-').toLowerCase()}">
+          <h4 class="ticket-section__title">${status}</h4>
+          <div class="ticket-section__grid">${list.map(renderCard).join('')}</div>
+        </section>`;
+    })
+    .join('');
+  const closedMatches = closedTickets.filter((t) => matchesFilter(t));
+  if (!openSections && !closedMatches.length) {
+    ticketList.innerHTML = '<p class="muted">Noch keine Tickets vorhanden.</p>';
+    return;
+  }
+  const closedSection = closedMatches.length
+    ? `<details class="ticket-section closed"><summary>Geschlossene Tickets (${closedMatches.length})</summary><div class="ticket-section__grid">${closedMatches
+          .map(renderCard)
+          .join('')}</div></details>`
+    : '';
+  ticketList.innerHTML = openSections + closedSection;
+  renderOverview();
+}
+
+function updateTicketActionLabel(card) {
+  if (!card) return;
+  const button = card.querySelector('button[data-ticket-submit]');
+  const notify = card.querySelector('input[data-ticket-notify]');
+  if (button) button.textContent = notify?.checked ? 'Speichern und Senden' : 'Speichern';
+}
+
+function renderOverview() {
+  if (!overviewServices || !currentUser) return;
+  const admin = !!currentUser.permissions?.admin;
+  const approver = admin || !!currentUser.permissions?.vacationApproval;
+  const selfEmp = getCurrentEmployee();
+  const employees = selfEmp ? [selfEmp] : [];
+  const allowedAreas = admin ? null : currentUser.areas || [];
+  const visibleTickets = allowedAreas
+    ? (state.tickets || []).filter((t) => !t.area || allowedAreas.includes(t.area))
+    : state.tickets || [];
+
+  if (overviewApprovalsBlock) {
+    if (!approver) {
+      overviewApprovalsBlock.hidden = true;
+    } else {
+      const pending = pendingVacationRequests().filter((entry) => entry.emp.status !== 'exited');
+      overviewApprovalsBlock.hidden = false;
+      if (overviewApprovals) {
+        overviewApprovals.innerHTML = pending.length
+          ? pending
+              .map(({ emp, vacation }) => {
+                const meta = VACATION_TYPES[vacation.type] || VACATION_TYPES.vacation;
+                const reason = vacation.reason ? `<p class="muted">Grund: ${escapeHtml(vacation.reason)}</p>` : '';
+                return `
+                  <article class="item">
+                    <div class="item__header">
+                      <strong>${escapeHtml(formatName(emp))}</strong>
+                      <small>${escapeHtml(meta.name)} · ${formatVacationRange(vacation)}</small>
+                    </div>
+                    ${reason}
+                    <div class="item__actions">
+                      <button type="button" class="ghost" data-approve-vacation="${vacation.id}" data-emp="${emp.id}">Freigeben</button>
+                      <button type="button" class="ghost danger" data-reject-vacation="${vacation.id}" data-emp="${emp.id}">Ablehnen</button>
+                    </div>
+                  </article>`;
+              })
+              .join('')
+          : '<p class="muted">Keine offenen Urlaubsanträge.</p>';
+      }
+    }
+  }
+
+  const serviceCards = employees
+    .map((emp) => {
+      const entries = upcomingAssignments(emp, 50);
+      const label = entries.length
+        ? entries
+            .map(({ date, service }) => `${formatShortDate(date)}: ${escapeHtml(service.name)}`)
+            .join('<br>')
+        : '<span class="muted">Keine Dienste geplant</span>';
+      return `<article class="item"><p>${label}</p></article>`;
+    })
+    .join('');
+  overviewServices.innerHTML = serviceCards || '<p class="muted">Keine Mitarbeiter sichtbar.</p>';
+
+  const vacationCards = employees
+    .map((emp) => {
+      const entries = upcomingVacations(emp, 50);
+      const label = entries.length
+        ? entries
+            .map((vac) => {
+              const meta = VACATION_TYPES[vac.type] || VACATION_TYPES.vacation;
+              const status = vac.status || 'approved';
+              const statusLabel =
+                status === 'pending'
+                  ? '<span class="pill pending">nicht freigegeben</span>'
+                  : status === 'rejected'
+                  ? '<span class="pill danger">abgelehnt</span>'
+                  : '<span class="pill success">freigegeben</span>';
+              return `${formatVacationRange(vac)} · ${escapeHtml(meta.name)} ${statusLabel}`;
+            })
+            .join('<br>')
+        : '<span class="muted">Keine Urlaube geplant</span>';
+      return `<article class="item"><p>${label}</p></article>`;
+    })
+    .join('');
+  overviewVacations.innerHTML = vacationCards || '<p class="muted">Keine Mitarbeiter sichtbar.</p>';
+
+  const myName = currentUser.name || '';
+  const myTickets = visibleTickets.filter((t) => (t.reporterName || '').toLowerCase() === myName.toLowerCase());
+  overviewMyTickets.innerHTML = myTickets.length
+    ? myTickets
+        .map((ticket) => {
+          const latest = (ticket.updates || [])[0];
+          const latestText = latest ? `${latest.status}: ${escapeHtml(latest.note || '')}` : 'Keine Updates';
+          const updateCount = ticket.updates?.length || 0;
+          return `<article class="item"><div class="item__header"><strong>${escapeHtml(ticket.ticketNumber || ticket.name)}</strong><small>${escapeHtml(ticket.name)}</small><small>${updateCount} Update${
+            updateCount === 1 ? '' : 's'
+          }</small></div><p>${latestText}</p></article>`;
+        })
+        .join('')
+    : '<p class="muted">Keine eigenen Tickets vorhanden.</p>';
+
+  if (overviewAssignedBlock) overviewAssignedBlock.hidden = !canManageTickets();
+  if (overviewAssigned && !overviewAssignedBlock?.hidden) {
+    const assigned = visibleTickets.filter((t) => t.assignee && t.assignee === myName);
+    overviewAssigned.innerHTML = assigned.length
+      ? assigned
+          .map((ticket) => {
+            const latest = (ticket.updates || [])[0];
+            const latestText = latest ? `${latest.status}: ${escapeHtml(latest.note || '')}` : 'Keine Updates';
+            const updateCount = ticket.updates?.length || 0;
+            return `<article class="item"><div class="item__header"><strong>${escapeHtml(ticket.ticketNumber || ticket.name)}</strong><small>${escapeHtml(ticket.status)}</small><small>${updateCount} Update${
+              updateCount === 1 ? '' : 's'
+            }</small></div><p>${latestText}</p></article>`;
+          })
+          .join('')
+      : '<p class="muted">Keine übernommenen Tickets.</p>';
+  }
+
+  renderYearOverview();
+}
+
+function weekendDistributionForEmployee(emp, year) {
+  let worked = 0;
+  let free = 0;
+  for (let month = 0; month < 12; month++) {
+    const days = daysInMonth(new Date(year, month, 1));
+    for (let day = 1; day <= days; day++) {
+      const date = new Date(year, month, day);
+      if (date.getDay() !== 6) continue;
+      const saturday = date;
+      const sunday = new Date(year, month, day + 1);
+      const satActive = isEmployeeActiveOnDate(emp, saturday);
+      const sunActive = isEmployeeActiveOnDate(emp, sunday);
+      if (!satActive && !sunActive) continue;
+      const satWork = satActive && isWorkingAssignment(emp, saturday);
+      const sunWork = sunActive && isWorkingAssignment(emp, sunday);
+      const satAbsence =
+        satActive &&
+        (assignmentForDate(emp, saturday) === 'WUNSCHFREI' ||
+          !!findVacationOnDate(emp, saturday) ||
+          !!findSickOnDate(emp, saturday));
+      const sunAbsence =
+        sunActive &&
+        (assignmentForDate(emp, sunday) === 'WUNSCHFREI' ||
+          !!findVacationOnDate(emp, sunday) ||
+          !!findSickOnDate(emp, sunday));
+      const hasWork = satWork || sunWork;
+      const considered = satActive || sunActive;
+      if (hasWork) worked++;
+      else if (considered) free++;
+    }
+  }
+  return { worked, free };
+}
+
+function annualEmployeeStats(emp, year) {
+  const stats = {
+    nights: 0,
+    holidayShifts: 0,
+    weekendFree: 0,
+    weekendWorked: 0,
+    vacationUsed: vacationUsageByYear(emp)[year] || 0,
+    vacationOpen: remainingVacationDays(emp, year),
+    sickDays: absenceDaysByKind(emp, 'sick', year),
+    careDays: absenceDaysByKind(emp, 'care', year) + absenceDaysByKind(emp, 'care2', year),
+  };
+  for (let month = 0; month < 12; month++) {
+    const monthDate = new Date(year, month, 1);
+    const monthKey = getMonthKey(monthDate);
+    const assignments = state.assignments[monthKey]?.[emp.id] || {};
+    Object.entries(assignments).forEach(([dayStr, serviceId]) => {
+      const day = Number(dayStr);
+      const date = new Date(year, month, day);
+      if (!isEmployeeActiveOnDate(emp, date)) return;
+      const service = state.services.find((s) => s.id === serviceId);
+      if (!service) return;
+      if (isNightService(service)) stats.nights += 1;
+      if (isHoliday(date) || date.getDay() === 0) stats.holidayShifts += 1;
+    });
+  }
+  const weekend = weekendDistributionForEmployee(emp, year);
+  stats.weekendFree = weekend.free;
+  stats.weekendWorked = weekend.worked;
+  return stats;
+}
+
+function renderYearOverview() {
+  if (!yearOverviewTable || !currentUser?.permissions?.admin) return;
+  const year = Number(state.layout?.yearOverviewYear) || currentMonth.getFullYear();
+  if (yearOverviewLabel) yearOverviewLabel.textContent = String(year);
+  const tbody = yearOverviewTable.querySelector('tbody');
+  const employees = state.employees.filter((emp) => emp.status !== 'exited');
+  if (!employees.length) {
+    if (tbody) tbody.innerHTML = '<tr><td colspan="9" class="muted">Keine Mitarbeiter vorhanden.</td></tr>';
+    return;
+  }
+  const rows = employees
+    .map((emp) => {
+      const stats = annualEmployeeStats(emp, year);
+      return `
+        <tr>
+          <td>${escapeHtml(formatName(emp))}</td>
+          <td>${stats.nights}</td>
+          <td>${stats.holidayShifts}</td>
+          <td>${stats.weekendFree}</td>
+          <td>${stats.weekendWorked}</td>
+          <td>${stats.vacationUsed}</td>
+          <td>${stats.vacationOpen}</td>
+          <td>${stats.sickDays}</td>
+          <td>${stats.careDays}</td>
+        </tr>`;
+    })
+    .join('');
+  if (tbody) tbody.innerHTML = rows;
+}
+
+function changeYearOverview(delta) {
+  const base = Number(state.layout?.yearOverviewYear) || currentMonth.getFullYear();
+  state.layout.yearOverviewYear = base + delta;
+  saveState();
+  renderYearOverview();
+}
+
+function renderScoreHistory() {
+  if (!scoreHistoryTable || !currentUser?.permissions?.admin) return;
+  const tbody = scoreHistoryTable.querySelector('tbody');
+  const profile = loadOptimizerProfile();
+  const history = Array.isArray(profile.history)
+    ? [...profile.history].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+    : [];
+
+  if (!history.length) {
+    if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="muted">Noch keine Dienstpläne bewertet.</td></tr>';
+    return;
+  }
+
+  const rows = history
+    .map((entry) => {
+      const metrics = entry.metrics || {};
+      const weights = entry.weights || BASE_SCORE_WEIGHTS;
+      const adjustments = entry.adjustments || computeWeightAdjustments(weights);
+      const adjustedKeys = Object.values(adjustments || {}).filter((a) => Math.abs(a.delta) > 0.01);
+      const note = entry.note || (adjustedKeys.length ? 'Lernanpassung aktiv' : 'Basisgewichte genutzt');
+      const monthLabel = formatMonthKeyLabel(entry.monthKey) || entry.monthKey || '-';
+      const costNumber = Number(entry.cost);
+      const cost = Number.isFinite(costNumber) ? costNumber.toFixed(1) : '-';
+      const costBadge = `<div class="metric-tags"><span class="pill">${escapeHtml(String(cost))}</span><span class="pill small muted">${escapeHtml(
+        describePenaltyScore(costNumber)
+      )}</span></div>`;
+      const metricBadges = `
+        <div class="metric-tags">
+          <span class="pill small">Stunden σ²: ${(metrics.hourVariance ?? 0).toFixed(3)}</span>
+          <span class="pill small">Nächte σ²: ${(metrics.nightVariance ?? 0).toFixed(3)}</span>
+          <span class="pill small">Wochenenden σ²: ${(metrics.weekendVariance ?? 0).toFixed(3)}</span>
+          <span class="pill small">Feiertage σ²: ${(metrics.holidayVariance ?? 0).toFixed(3)}</span>
+          <span class="pill small">Inseln: ${(metrics.isolationPenalty ?? 0).toFixed(3)}</span>
+        </div>`;
+      const perEmployee = Array.isArray(entry.perEmployee)
+        ? entry.perEmployee
+            .map((p) => `<span class="pill small">${escapeHtml(p.name || p.empId || 'Mitarbeiter')}: ${Number(p.score || 0).toFixed(1)}</span>`)
+            .join('')
+        : '<span class="pill small muted">Keine Daten</span>';
+      const weightTags = Object.keys(BASE_SCORE_WEIGHTS)
+        .map((key) => {
+          const adj = adjustments?.[key];
+          const deltaText = adj && Math.abs(adj.delta) > 0.01 ? ` (Δ ${adj.delta.toFixed(2)})` : '';
+          return `<span class="pill small">${key}: ${(weights[key] ?? BASE_SCORE_WEIGHTS[key]).toFixed(2)}${deltaText}</span>`;
+        })
+        .join('');
+      const adjustmentText = adjustedKeys.length
+        ? adjustedKeys.map((a) => `${a.delta > 0 ? '+' : ''}${a.delta.toFixed(2)}`).join(', ')
+        : 'Keine Anpassung';
+      const timestamp = entry.timestamp ? formatDateTime(entry.timestamp) : '';
+      return `
+        <tr>
+          <td>${escapeHtml(monthLabel)}</td>
+          <td>${costBadge}</td>
+          <td><div class="metric-tags">${perEmployee}</div></td>
+          <td>${metricBadges}</td>
+          <td><div class="metric-tags">${weightTags}</div></td>
+          <td><span class="pill small">${(entry.swapCount || 0).toString()}</span></td>
+          <td><div class="metric-tags"><span class="pill small">${escapeHtml(note)}</span><span class="pill small muted">${escapeHtml(
+        adjustmentText
+      )}</span></div></td>
+          <td>${escapeHtml(timestamp)}</td>
+        </tr>`;
+    })
+    .join('');
+
+  if (tbody) tbody.innerHTML = rows;
+}
+
+function handleTicketCardChange(event) {
+  const checkbox = event.target.closest('input[data-ticket-notify]');
+  if (!checkbox) return;
+  if (!canManageTickets()) return;
+  const card = checkbox.closest('[data-ticket-id]');
+  updateTicketActionLabel(card);
+}
+
 function renderServiceChip(service, options = {}) {
   if (!service) return '';
   const classes = ['service-chip'];
+  if (service.id === 'WUNSCHFREI') classes.push('wish-chip');
+  else if (isNightService(service)) classes.push('night-chip');
   if (options.strike) classes.push('strike');
   const windowLabel = service.start && service.end ? `${service.start}–${service.end}` : '';
   const tooltip = [service.name, windowLabel].filter(Boolean).join(' · ');
   return `<span class="${classes.join(' ')}" title="${escapeHtml(tooltip)}">${service.name}</span>`;
+}
+
+function setMultiSelect(select, values = []) {
+  if (!select) return;
+  const valueSet = new Set(values);
+  Array.from(select.options).forEach((opt) => {
+    opt.selected = valueSet.has(opt.value);
+  });
+}
+
+function getMultiSelectValues(select) {
+  if (!select) return [];
+  return Array.from(select.selectedOptions).map((opt) => opt.value);
+}
+
+function setGroupDisabled(group, disabled) {
+  if (!group) return;
+  group.querySelectorAll('input, select, textarea, button').forEach((el) => {
+    el.disabled = disabled;
+  });
+}
+
+function enforceEmployeeFieldPermissions(emp) {
+  const isAdmin = !!currentUser?.permissions?.admin;
+  setGroupDisabled(planningSettings, !isAdmin);
+  setGroupDisabled(adminSettings, !isAdmin);
 }
 
 function fillEmployeeForm(emp) {
@@ -1937,17 +3368,33 @@ function fillEmployeeForm(emp) {
   form.lastName.value = emp.lastName || '';
   form.personnelNumber.value = emp.personnelNumber || '';
   form.birthday.value = emp.birthday || '';
+  form.email.value = emp.email || '';
   form.employmentPercent.value = emp.employmentPercent || '';
   form.employmentHours.value = emp.employmentHours || '';
   form.functionId.value = emp.functionId || '';
   form.vacationDays.value = emp.vacationDays ?? 0;
   form.holidayFactor.value = emp.holidayFactor ?? 0;
   form.dailyWorkHours.value = emp.dailyWorkHours ?? 0;
+  form.vacationApproval.checked = !!emp.vacationApproval;
   form.hireDate.value = emp.hireDate || '';
   form.endDate.value = emp.endDate || '';
   form.nightAllowed.checked = !!emp.nightAllowed;
   form.rkt.checked = !!emp.rkt;
   form.doubleNights.checked = !!emp.doubleNights;
+  if (employeeAreasSelect) {
+    setMultiSelect(employeeAreasSelect, Array.isArray(emp.areas) ? emp.areas : []);
+  }
+  if (form.rosterPermission) {
+    form.rosterPermission.value = emp.rosterPermission || 'write';
+  }
+  if (form.ticketPermission) {
+    form.ticketPermission.value = emp.ticketPermission || 'edit';
+  }
+  if (form.admin) {
+    form.admin.checked = !!emp.admin;
+  }
+  if (employeeExitBtn) employeeExitBtn.disabled = emp.status === 'exited';
+  enforceEmployeeFieldPermissions(emp);
 }
 
 function fillServiceForm(service) {
@@ -1961,9 +3408,8 @@ function fillServiceForm(service) {
 function fillFunctionForm(func) {
   const form = functionForm.elements;
   form.name.value = func.name || '';
-  Array.from(functionServices.options).forEach((opt) => {
-    opt.selected = func.serviceIds?.includes(opt.value);
-  });
+  const selectedIds = Array.isArray(func.serviceIds) ? func.serviceIds : [];
+  renderFunctionServiceChoices(selectedIds);
 }
 
 function fillEmploymentForm(entry) {
@@ -1975,8 +3421,32 @@ function fillEmploymentForm(entry) {
 function handleEmployeeForm(e) {
   e.preventDefault();
   const data = new FormData(employeeForm);
-  const isUpdate = !!editing.employee;
-  const existing = isUpdate ? state.employees.find((emp) => emp.id === editing.employee) : null;
+  let isUpdate = !!editing.employee;
+  let existing = isUpdate ? state.employees.find((emp) => emp.id === editing.employee) : null;
+  const exitDate = parseISODate(data.get('endDate'));
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (exitDate) exitDate.setHours(0, 0, 0, 0);
+  const personnelNumber = data.get('personnelNumber').trim();
+  const duplicate = state.employees.find((emp) => emp.personnelNumber === personnelNumber && emp.id !== existing?.id);
+  if (duplicate) {
+    if (duplicate.status === 'exited') {
+      const reactivate = confirm(
+        `Dienstnummer ${personnelNumber} gehört zu ${formatName(duplicate)} (ausgeschieden). Wieder aktivieren?`
+      );
+      if (!reactivate) {
+        showNotification('Fehler beim Speichern', 'error');
+        return;
+      }
+      existing = duplicate;
+      editing.employee = duplicate.id;
+      isUpdate = true;
+    } else {
+      alert(`Dienstnummer ${personnelNumber} ist bereits vergeben.`);
+      showNotification('Fehler beim Speichern', 'error');
+      return;
+    }
+  }
   const entry = {
     id: editing.employee ?? uuid(),
     vacations: existing?.vacations ? clone(existing.vacations) : [],
@@ -1984,20 +3454,48 @@ function handleEmployeeForm(e) {
     groupId: existing?.groupId || null,
     firstName: data.get('firstName').trim(),
     lastName: data.get('lastName').trim(),
-    personnelNumber: data.get('personnelNumber').trim(),
+    personnelNumber,
     birthday: data.get('birthday'),
-    employmentPercent: data.get('employmentPercent'),
-    employmentHours: data.get('employmentHours'),
-    functionId: data.get('functionId'),
+    email: data.get('email') || '',
+    employmentPercent: data.get('employmentPercent') || existing?.employmentPercent || '',
+    employmentHours: data.get('employmentHours') || existing?.employmentHours || '',
+    functionId: data.get('functionId') || existing?.functionId || '',
     vacationDays: Number(data.get('vacationDays')) || 0,
-    holidayFactor: Number(data.get('holidayFactor')) || 0,
-    dailyWorkHours: Number(data.get('dailyWorkHours')) || 0,
+    holidayFactor: parseDecimalInput(
+      data.has('holidayFactor') ? data.get('holidayFactor') : existing?.holidayFactor,
+      existing?.holidayFactor || 0
+    ),
+    dailyWorkHours: parseDecimalInput(
+      data.has('dailyWorkHours') ? data.get('dailyWorkHours') : existing?.dailyWorkHours,
+      existing?.dailyWorkHours || 0
+    ),
+    vacationApproval: data.has('vacationApproval')
+      ? data.get('vacationApproval') === 'on'
+      : !!existing?.vacationApproval,
     hireDate: data.get('hireDate') || '',
     endDate: data.get('endDate') || '',
     nightAllowed: data.get('nightAllowed') === 'on',
     doubleNights: data.get('doubleNights') === 'on',
     rkt: data.get('rkt') === 'on',
+    areas: employeeAreasSelect?.disabled ? existing?.areas || [] : getMultiSelectValues(employeeAreasSelect),
+    rosterPermission: data.has('rosterPermission')
+      ? data.get('rosterPermission') || 'write'
+      : existing?.rosterPermission || 'write',
+    ticketPermission: data.has('ticketPermission')
+      ? data.get('ticketPermission') || 'edit'
+      : existing?.ticketPermission || 'edit',
+    admin: data.has('admin') ? data.get('admin') === 'on' : !!existing?.admin,
+    status: existing?.status || 'active',
   };
+
+  if (exitDate && exitDate <= today) {
+    entry.status = 'exited';
+  }
+
+  if (existing?.status === 'exited' && entry.status !== 'exited') {
+    entry.endDate = '';
+    entry.status = 'active';
+  }
 
   if (isUpdate) {
     if (!confirm('Wollen Sie die Änderungen wirklich speichern?')) return;
@@ -2007,25 +3505,71 @@ function handleEmployeeForm(e) {
     }
   } else {
     state.employees.push(entry);
-    ensureEmployeeInLayout(entry.id);
     editing.employee = entry.id;
     employeePicker.value = entry.id;
   }
+  ensureEmployeeInLayout(entry.id);
   appendLog('employees', `Mitarbeiter ${formatName(entry)} ${isUpdate ? 'aktualisiert' : 'angelegt'}.`, entry.id);
+  updateExitedEmployees(false);
   saveState();
   updateDropdowns();
   renderEmployees();
   renderRoster();
-  fillEmployeeForm(entry);
-  renderVacationPanel(entry);
-  renderSickPanel(entry);
+  handleEmployeeFormReset();
+  showNotification(isUpdate ? 'Änderung erfolgreich gespeichert' : 'Eintrag erfolgreich gespeichert', 'success');
 }
 
 function handleEmployeeFormReset() {
   editing.employee = null;
-  employeePicker.value = '';
+  const restrictToSelf = currentUser && !currentUser.permissions?.admin;
+  const selfEmp = getCurrentEmployee();
+  employeePicker.value = restrictToSelf && selfEmp ? selfEmp.id : '';
   renderVacationPanel(null);
   renderSickPanel(null);
+  if (employeeExitBtn) employeeExitBtn.disabled = true;
+  enforceEmployeeFieldPermissions(null);
+}
+
+function handleEmployeeExit() {
+  if (!editing.employee) {
+    showNotification('Fehler beim Speichern', 'error');
+    alert('Bitte zuerst einen Mitarbeiter auswählen.');
+    return;
+  }
+  const emp = state.employees.find((e) => e.id === editing.employee);
+  if (!emp || emp.status === 'exited') return;
+  if (!confirm(`Mitarbeiter ${formatName(emp)} wirklich als ausgeschieden markieren?`)) return;
+  const today = new Date();
+  emp.status = 'exited';
+  if (!emp.endDate) emp.endDate = formatISODate(today);
+  appendLog('employees', `Mitarbeiter ${formatName(emp)} ausgeschieden.`, emp.id);
+  saveState();
+  renderEmployees();
+  renderRoster();
+  handleEmployeeFormReset();
+  showNotification('Änderung erfolgreich gespeichert', 'success');
+}
+
+function activateEmployee(id) {
+  const emp = state.employees.find((e) => e.id === id);
+  if (!emp || emp.status !== 'exited') return;
+  if (!confirm(`Mitarbeiter ${formatName(emp)} wieder aktivieren?`)) return;
+  emp.status = 'active';
+  emp.endDate = '';
+  ensureEmployeeInLayout(emp.id);
+  appendLog('employees', `Mitarbeiter ${formatName(emp)} reaktiviert.`, emp.id);
+  saveState();
+  updateDropdowns();
+  renderEmployees();
+  renderRoster();
+  showNotification('Änderung erfolgreich gespeichert', 'success');
+}
+
+function handleEmployeeListClick(event) {
+  const activateBtn = event.target instanceof Element ? event.target.closest('[data-activate-employee]') : null;
+  if (activateBtn) {
+    activateEmployee(activateBtn.dataset.activateEmployee);
+  }
 }
 
 function handleServiceForm(e) {
@@ -2056,15 +3600,19 @@ function handleServiceForm(e) {
   renderFunctions();
   renderRules();
   renderRoster();
-  fillServiceForm(entry);
+  serviceForm.reset();
+  editing.service = null;
+  servicePicker.value = '';
+  showNotification(isUpdate ? 'Änderung erfolgreich gespeichert' : 'Eintrag erfolgreich gespeichert', 'success');
 }
 
 function handleFunctionForm(e) {
   e.preventDefault();
   const data = new FormData(functionForm);
   const isUpdate = !!editing.function;
-  const serviceIds = data.getAll('serviceIds');
-  const entry = { id: editing.function ?? uuid(), name: data.get('name').trim(), serviceIds };
+  const existing = isUpdate ? state.functions.find((f) => f.id === editing.function) : null;
+  const serviceIds = selectedFunctionServiceIds();
+  const entry = { id: editing.function ?? uuid(), name: data.get('name').trim(), serviceIds, status: existing?.status || 'active' };
 
   if (isUpdate) {
     if (!confirm('Wollen Sie die Änderungen wirklich speichern?')) return;
@@ -2080,7 +3628,61 @@ function handleFunctionForm(e) {
   updateDropdowns();
   renderFunctions();
   renderRoster();
-  fillFunctionForm(entry);
+  functionForm.reset();
+  renderFunctionServiceChoices([]);
+  editing.function = null;
+  functionPicker.value = '';
+  showNotification(isUpdate ? 'Änderung erfolgreich gespeichert' : 'Eintrag erfolgreich gespeichert', 'success');
+}
+
+function archiveFunction(id) {
+  const func = state.functions.find((f) => f.id === id);
+  if (!func || func.status === 'removed') return;
+  if (!confirm(`Funktion "${func.name}" wirklich entfernen?`)) return;
+  func.status = 'removed';
+  appendLog('functions', `Funktion ${func.name} entfernt.`, func.id);
+  if (editing.function === id) {
+    functionForm.reset();
+    renderFunctionServiceChoices([]);
+    editing.function = null;
+    functionPicker.value = '';
+  }
+  saveState();
+  updateDropdowns();
+  renderFunctions();
+  renderRoster();
+  showNotification('Änderung erfolgreich gespeichert', 'success');
+}
+
+function restoreFunction(id) {
+  const func = state.functions.find((f) => f.id === id);
+  if (!func || func.status !== 'removed') return;
+  func.status = 'active';
+  appendLog('functions', `Funktion ${func.name} wiederhergestellt.`, func.id);
+  saveState();
+  updateDropdowns();
+  renderFunctions();
+  renderRoster();
+  showNotification('Änderung erfolgreich gespeichert', 'success');
+}
+
+function handleFunctionListClick(event) {
+  const archiveBtn = event.target.closest('[data-function-archive]');
+  const restoreBtn = event.target.closest('[data-function-restore]');
+  const editBtn = event.target.closest('[data-function-edit]');
+  if (archiveBtn) {
+    archiveFunction(archiveBtn.dataset.functionArchive);
+    return;
+  }
+  if (restoreBtn) {
+    restoreFunction(restoreBtn.dataset.functionRestore);
+    return;
+  }
+  if (editBtn) {
+    const id = editBtn.dataset.functionEdit;
+    functionPicker.value = id;
+    handleFunctionPickerChange();
+  }
 }
 
 function handleEmploymentForm(e) {
@@ -2104,29 +3706,72 @@ function handleEmploymentForm(e) {
   renderEmployment();
   renderEmployees();
   renderRoster();
-  fillEmploymentForm(entry);
+  employmentForm.reset();
+  editing.employment = null;
+  employmentPicker.value = '';
+  showNotification(isUpdate ? 'Änderung erfolgreich gespeichert' : 'Eintrag erfolgreich gespeichert', 'success');
+}
+
+function describeWeekdaySelections(selections) {
+  return WEEKDAY_KEYS.map((key) => {
+    const ids = selections?.[key] || [];
+    if (!ids.length) return null;
+    const counts = ids.reduce((acc, id) => {
+      acc[id] = (acc[id] || 0) + 1;
+      return acc;
+    }, {});
+    const services = Object.entries(counts)
+      .map(([id, count]) => {
+        const service = state.services.find((s) => s.id === id);
+        return service ? `${service.name}${count > 1 ? `×${count}` : ''}` : '';
+      })
+      .filter(Boolean)
+      .join(', ');
+    return services ? `${weekdayLabelFromKey(key)}: ${services}` : null;
+  })
+    .filter(Boolean)
+    .join(' | ');
 }
 
 function handleRulesForm(e) {
   e.preventDefault();
   const data = new FormData(rulesForm);
   const selections = ensureWeekdaySelections(weekdaySelections, state.services);
-  const restDays = toNumber(data.get('restDays'));
+  const restAfterNight = toNumber(data.get('restAfterNight'));
+  const restAfterDoubleNight = toNumber(data.get('restAfterDoubleNight'));
   const maxWeek = toNumber(data.get('maxHoursWeek'));
   const minFreeWeekends = toNumber(data.get('minFreeWeekends'));
   const maxNights = toNumber(data.get('maxNights'));
   const vacationDefault = toNumber(data.get('vacationDefault'));
   const start = data.get('weekdayRangeStart');
   const end = data.get('weekdayRangeEnd');
-  state.rules.restDays = restDays;
+  const existingRule = state.rules.weekdayRules.find((rule) => rule.id === editingWeekdayRuleId);
+  state.rules.restAfterNight = restAfterNight;
+  state.rules.restAfterDoubleNight = restAfterDoubleNight;
   state.rules.maxHoursWeek = maxWeek;
   state.rules.minFreeWeekends = Number.isFinite(minFreeWeekends) ? minFreeWeekends : undefined;
   state.rules.maxNights = maxNights;
   state.rules.vacationDefault = Number.isFinite(vacationDefault)
     ? vacationDefault
     : state.rules.vacationDefault;
-  let message = 'Regelwerk aktualisiert.';
-  if (start) {
+  const limits = [
+    Number.isFinite(restAfterNight) ? `${restAfterNight} Ruhetage nach Nacht` : null,
+    Number.isFinite(restAfterDoubleNight) ? `${restAfterDoubleNight} nach Doppelnacht` : null,
+    Number.isFinite(maxWeek) ? `${maxWeek}h/Woche` : null,
+    Number.isFinite(minFreeWeekends) ? `${minFreeWeekends} freie Wochenenden` : null,
+    Number.isFinite(maxNights) ? `${maxNights} Nachtdienste` : null,
+  ]
+    .filter(Boolean)
+    .join(', ');
+  let message = `Regelwerk aktualisiert.${limits ? ` (${limits})` : ''}`;
+  if (existingRule) {
+    existingRule.start = start || existingRule.start || '';
+    existingRule.end = end || existingRule.end || '';
+    existingRule.services = selections;
+    const desc = describeWeekdaySelections(selections);
+    const rangeLabel = existingRule.start ? `ab ${formatShortDate(existingRule.start)}` : 'laufend';
+    message = `Pflichtdienste ${rangeLabel} aktualisiert: ${desc || 'keine Dienste hinterlegt'}.`;
+  } else if (start) {
     state.rules.weekdayRules = state.rules.weekdayRules || [];
     const entry = {
       id: uuid(),
@@ -2136,20 +3781,43 @@ function handleRulesForm(e) {
     };
     state.rules.weekdayRules.push(entry);
     weekdaySelections = ensureWeekdaySelections(entry.services, state.services);
+    editingWeekdayRuleId = entry.id;
     if (weekdayRangeStart) weekdayRangeStart.value = '';
     if (weekdayRangeEnd) weekdayRangeEnd.value = '';
-    message = `Pflichtdienste ab ${formatShortDate(start)} gespeichert.`;
+    const desc = describeWeekdaySelections(selections);
+    message = `Pflichtdienste ab ${formatShortDate(start)} gespeichert: ${desc || 'keine Dienste hinterlegt'}.`;
   } else if (state.rules.weekdayRules?.length) {
     const active = currentWeekdayRule();
     if (active) {
       active.services = selections;
+      editingWeekdayRuleId = active.id;
+      const desc = describeWeekdaySelections(selections);
+      message = `Pflichtdienste aktualisiert: ${desc || 'keine Dienste hinterlegt'}.`;
     }
   } else {
     state.rules.weekdayRules = [createWeekdayRule({ services: selections })];
+    editingWeekdayRuleId = state.rules.weekdayRules[0].id;
+    const desc = describeWeekdaySelections(selections);
+    message = `Pflichtdienste hinterlegt: ${desc || 'keine Dienste hinterlegt'}.`;
   }
   appendLog('rules', message, 'rules');
   saveState();
   renderRules();
+  renderRoster();
+  rulesForm.reset();
+  renderRules();
+  showNotification('Änderung erfolgreich gespeichert', 'success');
+}
+
+function loadWeekdayRuleForEdit(id) {
+  const target = state.rules.weekdayRules.find((rule) => rule.id === id);
+  if (!target) return;
+  editingWeekdayRuleId = target.id;
+  weekdaySelections = ensureWeekdaySelections(target.services || {}, state.services);
+  if (weekdayRangeStart) weekdayRangeStart.value = target.start || '';
+  if (weekdayRangeEnd) weekdayRangeEnd.value = target.end || '';
+  renderWeekdayControls();
+  renderWeekdayHistory();
   renderRoster();
 }
 
@@ -2158,7 +3826,160 @@ function toNumber(value) {
   return Number.isFinite(n) ? n : undefined;
 }
 
+function canEditRoster() {
+  return !!currentUser && (currentUser.permissions?.admin || currentUser.permissions?.roster === 'write');
+}
+
+function getCurrentEmployee() {
+  if (!currentUser) return null;
+  return state.employees.find((e) => e.personnelNumber === currentUser.id) || null;
+}
+
+function canEditOwnWishes(emp) {
+  if (!emp || !currentUser) return false;
+  if (canEditRoster()) return false;
+  return currentUser.permissions?.roster === 'read' && emp.personnelNumber === currentUser.id;
+}
+
+function canManageTickets() {
+  return !!currentUser && (currentUser.permissions?.admin || currentUser.permissions?.tickets === 'edit');
+}
+
+function canCreateTickets() {
+  return (
+    !!currentUser &&
+    (currentUser.permissions?.admin ||
+      currentUser.permissions?.tickets === 'create' ||
+      currentUser.permissions?.tickets === 'edit')
+  );
+}
+
+function buildUserSession(userId, entry) {
+  const emp = state.employees.find((e) => e.personnelNumber === userId);
+  const basePermissions = { ...(entry?.permissions || {}) };
+  if (emp) {
+    basePermissions.roster = emp.rosterPermission === 'write' ? 'write' : 'read';
+    basePermissions.tickets = emp.ticketPermission === 'edit' ? 'edit' : 'create';
+    if (emp.admin) basePermissions.admin = true;
+    if (emp.vacationApproval) basePermissions.vacationApproval = true;
+  }
+  return {
+    id: userId,
+    ...entry,
+    name: emp ? formatName(emp) : entry?.name || userId,
+    permissions: basePermissions,
+    areas: emp?.areas || AREAS,
+    employeeEmail: emp?.email || '',
+  };
+}
+
+function applyPermissions() {
+  const loggedIn = !!currentUser;
+  if (appShell) appShell.hidden = !loggedIn;
+  if (logoutBtn) logoutBtn.hidden = !loggedIn;
+  if (loginForm) loginForm.classList.toggle('logged-in', loggedIn);
+  if (loginStatus) loginStatus.textContent = loggedIn
+      ? `Angemeldet als ${currentUser.name || currentUser.id}`
+      : 'Bitte einloggen.';
+  const admin = !!currentUser?.permissions?.admin;
+  const editRoster = canEditRoster();
+  document.querySelectorAll('[data-permission]').forEach((el) => {
+    const gate = el.dataset.permission;
+    let allowed = loggedIn;
+    if (gate === 'admin') allowed = admin;
+    if (gate === 'roster-write') allowed = editRoster;
+    if (gate === 'tickets-edit') allowed = canManageTickets();
+    if (gate === 'tickets-create') allowed = canCreateTickets();
+    el.hidden = !allowed;
+  });
+  if (rowToolsMenu) rowToolsMenu.hidden = !editRoster;
+  const rosterLogPanel = rosterPanel ? rosterPanel.querySelector('.log-panel') : null;
+  if (rosterLogPanel) rosterLogPanel.hidden = !(admin || editRoster);
+  if (!editRoster && rosterMode !== 'view') {
+    rosterMode = 'view';
+    renderRoster();
+  }
+  enforceEmployeeFieldPermissions(editing.employee ? state.employees.find((e) => e.id === editing.employee) : getCurrentEmployee());
+  const allowedScreens = admin ? null : new Set(['roster', 'ticketCreate', 'tickets', 'missions', 'employees', 'overview']);
+  menuButtons.forEach((btn) => {
+    const allowed = loggedIn && (admin || allowedScreens.has(btn.dataset.target));
+    btn.disabled = !allowed;
+    btn.classList.toggle('disabled', !allowed);
+  });
+  if (!loggedIn) {
+    stopMissionPolling();
+    missionResults = new Map();
+    renderMissionBoard();
+    return;
+  }
+  const activeBtn = document.querySelector('.main-menu button.active');
+  const activeTarget = activeBtn?.dataset.target;
+  if (!admin && activeTarget && !allowedScreens.has(activeTarget)) {
+    showScreen('overview');
+  }
+  if (ticketForm) {
+    ticketForm.querySelectorAll('input, select, textarea, button').forEach((el) => {
+      el.disabled = !canCreateTickets();
+    });
+  }
+  rosterModeButtons.forEach((btn) => {
+    btn.disabled = !loggedIn;
+  });
+  if (!editRoster && rosterMode !== 'view' && !canEditOwnWishes(getCurrentEmployee())) {
+    setRosterMode('view');
+  }
+  if (generateBtn) generateBtn.hidden = !editRoster;
+  if (clearBtn) clearBtn.hidden = !editRoster;
+  if (printPlanBtn) printPlanBtn.disabled = !loggedIn;
+  renderTickets();
+  renderRoster();
+  renderOverview();
+  syncMissionInputs();
+  startMissionPolling();
+}
+
+function handleLogin(event) {
+  event.preventDefault();
+  hydrateStateFromStorage();
+  const userId = loginUser?.value?.trim();
+  const password = loginPassword?.value || '';
+  const entry = userId ? USERS[userId] : null;
+  if (!entry || entry.password !== password) {
+    if (loginStatus) loginStatus.textContent = 'Login fehlgeschlagen.';
+    showNotification('Fehler beim Login', 'error');
+    return;
+  }
+  currentUser = buildUserSession(userId, entry);
+  applyPermissions();
+  showScreen('overview');
+  if (loginUser) loginUser.value = '';
+  if (loginPassword) loginPassword.value = '';
+  if (logoutBtn) logoutBtn.hidden = false;
+  showNotification('Login erfolgreich', 'success');
+}
+
+function handleLogout() {
+  currentUser = null;
+  if (loginPassword) loginPassword.value = '';
+  applyPermissions();
+  showNotification('Abgemeldet', 'success');
+}
+
+function autoLoginDefaultUser() {
+  forceDefaultLogin();
+}
+
 function showScreen(target) {
+  if (!currentUser) {
+    if (appShell) appShell.hidden = true;
+    return;
+  }
+  const admin = !!currentUser?.permissions?.admin;
+  const allowedScreens = admin ? null : new Set(['roster', 'ticketCreate', 'tickets', 'missions', 'employees', 'overview']);
+  if (!admin && !allowedScreens.has(target)) {
+    showNotification('Keine Berechtigung für diesen Bereich', 'error');
+    return;
+  }
   menuButtons.forEach((btn) => btn.classList.toggle('active', btn.dataset.target === target));
   screens.forEach((panel) => {
     if (panel.dataset.screen === target) {
@@ -2169,8 +3990,21 @@ function showScreen(target) {
   });
   if (target === 'roster') {
     renderRoster();
-  } else if (target === 'vacationOverview') {
-    renderVacationMonitor();
+  } else if (target === 'tickets') {
+    renderTickets();
+  } else if (target === 'ticketCreate') {
+    autoFillTicketReporterEmail(true);
+  } else if (target === 'rules') {
+    editingWeekdayRuleId = currentWeekdayRule()?.id || editingWeekdayRuleId;
+    renderRules();
+  } else if (target === 'missions') {
+    renderMissionBoard();
+  } else if (target === 'overview') {
+    renderOverview();
+  } else if (target === 'yearOverview') {
+    renderYearOverview();
+  } else if (target === 'scoreHistory') {
+    renderScoreHistory();
   }
 }
 
@@ -2186,7 +4020,7 @@ function buildRosterHeader(date) {
   const headerRows = [document.createElement('tr'), document.createElement('tr')];
   const stickyCells = [
     '<th class="names col-info" rowspan="2"><div class="info-header"><span>Name</span><span>Personalnummer</span></div></th>',
-    '<th class="names col-hours" rowspan="2"><div class="hours-header"><span>Stundensoll</span><span>Noch zu verplanen</span><span>Nachtdienste</span><span>Feiertagsdienste</span></div></th>',
+    '<th class="names col-hours" rowspan="2"><div class="hours-header"><span>Details</span></div></th>',
   ];
   stickyCells.forEach((html) => headerRows[0].insertAdjacentHTML('beforeend', html));
   for (let day = 1; day <= days; day++) {
@@ -2203,12 +4037,58 @@ function buildRosterHeader(date) {
   headerRows.forEach((row) => rosterTable.appendChild(row));
 }
 
+function buildVacationCalendarRow(date) {
+  const days = daysInMonth(date);
+  const tr = document.createElement('tr');
+  tr.className = 'vacation-calendar-row';
+  const labelCell = document.createElement('td');
+  labelCell.className = 'names col-info';
+  labelCell.colSpan = 2;
+  labelCell.innerHTML = `
+    <div class="vacation-calendar__label">
+      <strong>Urlaube</strong>
+      <small>pro Tag</small>
+    </div>
+  `;
+  tr.appendChild(labelCell);
+
+  for (let day = 1; day <= days; day++) {
+    const d = new Date(date.getFullYear(), date.getMonth(), day);
+    const cls = ['day-col', 'vacation-calendar__cell'];
+    if (isHoliday(d)) cls.push('holiday');
+    else if (d.getDay() === 0) cls.push('weekend');
+    else if (d.getDay() === 6) cls.push('saturday');
+    const count = countVacationsOnDate(d);
+    const limit = getVacationLimitForDate(d);
+    const width = limit ? Math.min((count / limit) * 100, 100) : Math.min(count * 25, 100);
+    const cell = document.createElement('td');
+    cell.className = cls.join(' ');
+    if (limit && count >= limit) {
+      cell.classList.add('vacation-limit-hit');
+    }
+    cell.innerHTML = `
+      <div class="vacation-meter" role="img" aria-label="${count} Urlaube${limit ? ` von ${limit}` : ''} am ${
+      d.toLocaleDateString('de-AT', { weekday: 'long' })
+    }">
+        <span style="width:${width}%"></span>
+        <small>${count}${limit ? `/${limit}` : ''}</small>
+      </div>
+    `;
+    tr.appendChild(cell);
+  }
+
+  return tr;
+}
+
 function renderRoster() {
+  const changed = updateExitedEmployees(false);
   buildRosterHeader(currentMonth);
   const monthKey = getMonthKey(currentMonth);
   ensureMonthMaps(monthKey);
   const days = daysInMonth(currentMonth);
   cleanSelectedRows();
+  if (changed) saveState();
+  rosterTable.appendChild(buildVacationCalendarRow(currentMonth));
   const employees = getOrderedEmployees().filter((emp) => isEmployeeActiveInMonth(emp, currentMonth));
   const renderedGroups = new Set();
   let assignmentsCleaned = false;
@@ -2262,6 +4142,7 @@ function renderRoster() {
   });
   renderLegend();
   renderVacationMonitor();
+  renderOverview();
   if (editing.employee) {
     const currentEmp = state.employees.find((e) => e.id === editing.employee);
     if (currentEmp) {
@@ -2285,10 +4166,14 @@ function buildGroupRow(group, days) {
   infoCell.innerHTML = `
     <div class="group-header">
       <strong>${group.name}</strong>
-      <span class="group-header__actions">
+      ${
+        canEditRoster()
+          ? `<span class="group-header__actions">
         <button type="button" class="ghost" data-rename-group="${group.id}">Umbenennen</button>
         <button type="button" class="ghost" data-delete-group="${group.id}">Gruppe löschen</button>
-      </span>
+      </span>`
+          : ''
+      }
     </div>
   `;
   tr.appendChild(infoCell);
@@ -2308,13 +4193,20 @@ function buildEmployeeRow(emp, monthKey, days, markAssignmentsDirty) {
   const remainingHours = targetHours - assignedHours;
   const remainingClass = remainingHours < 0 ? 'hours-remaining negative' : 'hours-remaining';
   const selected = selectedRows.has(emp.id) ? 'checked' : '';
+  const isSelf = currentUser && emp.personnelNumber === currentUser.id;
+  const selfWishOnly = canEditOwnWishes(emp);
+  const allowRowTools = canEditRoster();
   const nameCell = document.createElement('td');
   nameCell.className = 'names col-info';
   nameCell.innerHTML = `
     <div class="row-header">
-      <label class="sr-only" for="row-select-${emp.id}">Mitarbeiter auswählen</label>
+      ${
+        allowRowTools
+          ? `<label class="sr-only" for="row-select-${emp.id}">Mitarbeiter auswählen</label>
       <input type="checkbox" id="row-select-${emp.id}" data-row-select="${emp.id}" ${selected}>
-      <button type="button" class="drag-handle" data-drag-handle draggable="true" aria-label="Zeile verschieben">⋮⋮</button>
+      <button type="button" class="drag-handle" data-drag-handle draggable="true" aria-label="Zeile verschieben">⋮⋮</button>`
+          : ''
+      }
       <div class="info-cell">
         <span class="emp-name">${formatName(emp)}</span>
         <span class="emp-pnr">${emp.personnelNumber}</span>
@@ -2361,12 +4253,17 @@ function buildEmployeeRow(emp, monthKey, days, markAssignmentsDirty) {
         markAssignmentsDirty();
       }
     }
-    const serviceOptions = allowedServicesForEmployee(emp, assign);
+    const serviceOptions = allowRowTools
+      ? allowedServicesForEmployee(emp, assign)
+      : selfWishOnly
+        ? [{ id: 'WUNSCHFREI', name: 'Wunschfrei' }]
+        : [];
     const selectPieces = ['<option value="">–</option>'];
     let includesAssigned = false;
     serviceOptions.forEach((s) => {
       if (assign === s.id) includesAssigned = true;
-      selectPieces.push(`<option value="${s.id}" ${assign === s.id ? 'selected' : ''}>${s.name}</option>`);
+      const disabled = s.disabled ? 'disabled' : '';
+      selectPieces.push(`<option value="${s.id}" ${assign === s.id ? 'selected' : ''} ${disabled}>${s.name}</option>`);
     });
     if (assign && !includesAssigned) {
       const fallbackService = state.services.find((s) => s.id === assign);
@@ -2385,7 +4282,7 @@ function buildEmployeeRow(emp, monthKey, days, markAssignmentsDirty) {
     if (!canAssign) {
       td.classList.add('inactive');
     }
-    const selectDisabled = locked || !serviceOptions.length || !canAssign;
+    const selectDisabled = locked || !serviceOptions.length || !canAssign || (!allowRowTools && !selfWishOnly);
     const parts = ['<div class="cell">'];
     if (isBirthday) {
       parts.push('<span class="birthday-flag" title="Geburtstag">🎂</span>');
@@ -2395,7 +4292,14 @@ function buildEmployeeRow(emp, monthKey, days, markAssignmentsDirty) {
     const absenceMeta = showVacation ? VACATION_TYPES[vacationEntry.type] || VACATION_TYPES.vacation : null;
     const sickMeta = showSick ? SICK_TYPES[sickEntry.kind] || SICK_TYPES.sick : null;
     const showAbsence = showVacation || showSick;
-    const service = serviceOptions.find((s) => s.id === assign) || state.services.find((s) => s.id === assign);
+    const service =
+      serviceOptions.find((s) => s.id === assign) || state.services.find((s) => s.id === assign) ||
+      (assign === 'WUNSCHFREI' ? { id: 'WUNSCHFREI', name: 'Wunschfrei' } : null);
+    const dateKey = formatISODate(d);
+    const clearedServiceId =
+      (vacationEntry?.clearedAssignments && vacationEntry.clearedAssignments[dateKey]) ||
+      (sickEntry?.clearedAssignments && sickEntry.clearedAssignments[dateKey]);
+    const clearedService = clearedServiceId ? state.services.find((s) => s.id === clearedServiceId) : null;
     const showServiceWithAbsence =
       (showVacation && absenceMeta?.showService && service) || (showSick && sickMeta?.showService && service);
     if (showServiceWithAbsence) {
@@ -2412,19 +4316,27 @@ function buildEmployeeRow(emp, monthKey, days, markAssignmentsDirty) {
       parts.push(
         `<span class="absence-pill ${showVacation ? 'vacation' : 'sick'}" title="${title}">${label}</span>`
       );
+      if (showVacation && vacationEntry.status === 'pending') {
+        parts.push('<span class="vacation-status pending">Nicht freigegeben</span>');
+      }
+      if (clearedService) {
+        parts.push(`<span class="cleared-service">${renderServiceChip(clearedService, { strike: true })}</span>`);
+      }
     } else if (!canAssign) {
       parts.push('<span class="muted">-</span>');
-    } else if (rosterMode === 'view') {
+    } else if (rosterMode === 'view' && !selfWishOnly) {
       if (service) {
         parts.push(renderServiceChip(service));
       } else {
         parts.push('<span class="muted">–</span>');
       }
-    } else {
+    } else if (allowRowTools || selfWishOnly) {
       parts.push(`<select data-emp="${emp.id}" data-day="${day}" ${selectDisabled ? 'disabled' : ''}>${options}</select>`);
-      parts.push(
-        `<label class="lock"><input type="checkbox" data-lock="${emp.id}" data-day="${day}" ${locked ? 'checked' : ''}> <span>Sperren</span></label>`
-      );
+      if (allowRowTools) {
+        parts.push(
+          `<label class="lock"><input type="checkbox" data-lock="${emp.id}" data-day="${day}" ${locked ? 'checked' : ''}> <span>Sperren</span></label>`
+        );
+      }
     }
     parts.push('</div>');
     td.innerHTML = parts.join('');
@@ -2526,6 +4438,7 @@ function handleRosterClick(event) {
 }
 
 function handleRowDragStart(event) {
+  if (!canEditRoster()) return;
   const handle = event.target instanceof Element ? event.target.closest('[data-drag-handle]') : null;
   if (!handle) return;
   const row = handle.closest('tr[data-emp-row]');
@@ -2537,6 +4450,7 @@ function handleRowDragStart(event) {
 }
 
 function handleRowDragOver(event) {
+  if (!canEditRoster()) return;
   if (!draggingRowId) return;
   const row = event.target instanceof Element ? event.target.closest('tr[data-emp-row]') : null;
   if (!row || row.dataset.empRow === draggingRowId) return;
@@ -2545,6 +4459,7 @@ function handleRowDragOver(event) {
 }
 
 function handleRowDrop(event) {
+  if (!canEditRoster()) return;
   if (!draggingRowId) return;
   const row = event.target instanceof Element ? event.target.closest('tr[data-emp-row]') : null;
   if (!row || row.dataset.empRow === draggingRowId) return;
@@ -2584,11 +4499,21 @@ function ensureMonthMaps(monthKey) {
   if (!state.locks[monthKey]) state.locks[monthKey] = {};
 }
 
+function employeeAllowedForService(emp, service) {
+  const func = state.functions.find((f) => f.id === emp.functionId);
+  return Array.isArray(func?.serviceIds) && func.serviceIds.includes(service.id);
+}
+
 function handleRosterChange(e) {
-  if (
-    rosterMode === 'view' &&
-    (e.target.matches('select[data-emp]') || e.target.matches('input[type="checkbox"][data-lock]'))
-  ) {
+  if (e.target.matches('select[data-emp]')) {
+    const emp = state.employees.find((em) => em.id === e.target.dataset.emp);
+    const selfWishOnly = emp ? canEditOwnWishes(emp) : false;
+    if (rosterMode === 'view' && !selfWishOnly) {
+      e.preventDefault();
+      return;
+    }
+  }
+  if (e.target.matches('input[type="checkbox"][data-lock]') && !canEditRoster()) {
     e.preventDefault();
     return;
   }
@@ -2606,7 +4531,40 @@ function handleRosterChange(e) {
     const monthKey = getMonthKey(currentMonth);
     ensureMonthMaps(monthKey);
     if (!state.assignments[monthKey][emp]) state.assignments[monthKey][emp] = {};
-    state.assignments[monthKey][emp][day] = e.target.value;
+    const previous = state.assignments[monthKey][emp][day] || '';
+    const nextValue = e.target.value;
+    const employeeEntry = state.employees.find((em) => em.id === emp);
+    const selfWishOnly = employeeEntry ? canEditOwnWishes(employeeEntry) : false;
+    if (selfWishOnly && nextValue && nextValue !== 'WUNSCHFREI') {
+      showNotification('Nur Wunschfrei kann eingetragen werden.', 'error');
+      e.target.value = previous;
+      return;
+    }
+    if (nextValue === 'WUNSCHFREI') {
+      const existing = Object.entries(state.assignments[monthKey][emp] || {}).filter(
+        ([d, v]) => v === 'WUNSCHFREI' && Number(d) !== day
+      ).length;
+      if (existing >= 3) {
+        showNotification('Maximal 3 Wunschfrei-Tage pro Monat erlaubt', 'error');
+        e.target.value = previous;
+        return;
+      }
+      const prevServiceId = state.assignments[monthKey][emp]?.[day - 1];
+      const prevService = state.services.find((s) => s.id === prevServiceId);
+      if (prevService && isNightService(prevService)) {
+        showNotification('Vor Wunschfrei darf kein Nachtdienst stehen.', 'error');
+        e.target.value = previous;
+        return;
+      }
+    }
+    const nextService = state.services.find((s) => s.id === nextValue);
+    const currentDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
+    if (nextService && isNightService(nextService) && employeeEntry && hasNextDayAbsenceOrWish(employeeEntry, currentDate)) {
+      showNotification('Kein Nachtdienst direkt vor Wunschfrei/Urlaub/Krankenstand erlaubt.', 'error');
+      e.target.value = previous;
+      return;
+    }
+    state.assignments[monthKey][emp][day] = nextValue;
     saveState();
     renderRoster();
   }
@@ -2631,6 +4589,18 @@ function countNights(monthKey, empId) {
     const service = state.services.find((s) => s.id === serviceId);
     return isNightService(service);
   }).length;
+}
+
+function countTotalAssignedNights(monthKey) {
+  return Object.values(state.assignments[monthKey] || {}).reduce((sum, entries) => {
+    return (
+      sum +
+      Object.values(entries || {}).filter((serviceId) => {
+        const service = state.services.find((s) => s.id === serviceId);
+        return isNightService(service);
+      }).length
+    );
+  }, 0);
 }
 
 function isNightService(service) {
@@ -2683,115 +4653,550 @@ function hoursForEmployee(monthKey, empId) {
   return total;
 }
 
-function workedRecently(empId, day, restDays) {
-  if (!restDays) return false;
-  const monthKey = getMonthKey(currentMonth);
+function lastAssignmentInfo(empId, day, monthKey) {
   const assignments = state.assignments[monthKey]?.[empId] || {};
-  for (let i = 1; i <= restDays; i++) {
-    const prevDay = day - i;
-    if (assignments[prevDay]) return true;
+  for (let offset = 1; offset < day; offset++) {
+    const prevDay = day - offset;
+    const serviceId = assignments[prevDay];
+    if (serviceId) {
+      const service = state.services.find((s) => s.id === serviceId);
+      return { gap: offset - 1, service, serviceId };
+    }
   }
-  return false;
+  return { gap: Infinity, service: null, serviceId: null };
 }
 
-function generateRoster() {
+function countStreakForMonth(empId, day, predicate, monthKey) {
+  const assignments = state.assignments[monthKey]?.[empId] || {};
+  let streak = 0;
+  for (let i = day - 1; i >= 1; i--) {
+    const sid = assignments[i];
+    if (!sid) break;
+    const svc = state.services.find((s) => s.id === sid);
+    if (!svc || !predicate(svc, sid)) break;
+    streak++;
+  }
+  return streak;
+}
+
+class RosterOptimizer {
+  constructor(monthDate, state) {
+    this.monthDate = new Date(monthDate);
+    this.state = state || {};
+    this.monthKey = getMonthKey(this.monthDate);
+    this.daysInMonth = new Date(this.monthDate.getFullYear(), this.monthDate.getMonth() + 1, 0).getDate();
+    this.assignments = {};
+    this.employees = (this.state.employees || []).filter((e) => e.status === 'active');
+    this.history = { swaps: 0, initialPenalty: 0, finalPenalty: 0 };
+  }
+
+  async run() {
+    console.log('Optimizer gestartet für:', this.monthKey);
+
+    const totalNeeded = this.forceFullAssignment();
+    if (totalNeeded === 0) {
+      throw new Error("Keine Dienste in den Regeln für diesen Monat gefunden! Prüfe 'Menü -> Regeln'.");
+    }
+
+    this.history.initialPenalty = this.calculateTotalPenalty();
+
+    let temp = 1000;
+    const iterations = 15000;
+
+    for (let i = 0; i < iterations; i++) {
+      const move = this.proposeMove();
+      if (!move) continue;
+
+      const delta = this.calculateDelta(move);
+      if (delta < 0 || Math.random() < Math.exp(-delta / temp)) {
+        this.applyMove(move);
+        if (delta !== 0) this.history.swaps++;
+      }
+      temp *= 0.9995;
+      if (i % 500 === 0) await new Promise((r) => setTimeout(r, 0));
+    }
+
+    this.history.finalPenalty = this.calculateTotalPenalty();
+    this.updateScoreHistory();
+    return this.assignments;
+  }
+
+  forceFullAssignment() {
+    let count = 0;
+    for (let d = 1; d <= this.daysInMonth; d++) {
+      const neededSrvIds = this.getRequiredServicesForDay(d);
+
+      neededSrvIds.forEach((sId) => {
+        const qualified = this.employees.filter((e) => this.canDo(e.id, sId));
+        if (qualified.length > 0) {
+          const chosen = qualified[Math.floor(Math.random() * qualified.length)];
+          this.updateAssignment(chosen.id, d, sId);
+          count++;
+        }
+      });
+    }
+    console.log(`Initial ${count} Dienste zugewiesen.`);
+    return count;
+  }
+
+  getRequiredServicesForDay(day) {
+    const date = new Date(this.monthDate.getFullYear(), this.monthDate.getMonth(), day);
+    const dayIdx = date.getDay();
+
+    let services = [];
+    const rules = this.state.rules?.weekdayRules || [];
+    rules.forEach((r) => {
+      if (r.services && r.services[dayIdx]) {
+        services = services.concat(r.services[dayIdx]);
+      }
+    });
+    return services;
+  }
+
+  getEmpPenalty(empId) {
+    let penalty = 0;
+    const work = this.assignments[empId] || {};
+    const days = Object.keys(work)
+      .map(Number)
+      .sort((a, b) => a - b);
+
+    const employee = this.state.employees?.find((e) => e.id === empId);
+    const types = this.state.employmentTypes || [];
+    const employment = types.find((t) => t.id === employee?.employmentTypeId);
+
+    const targetHours = employment ? parseFloat(employment.hours || 0) : 160;
+
+    let totalHours = 0;
+    days.forEach((day) => {
+      const srv = this.state.services?.find((s) => s.id === work[day]);
+      totalHours += srv ? parseFloat(srv.duration || 0) : 0;
+
+      if (srv?.isNight && (work[day + 1] || work[day + 2])) penalty += 20000;
+    });
+
+    if (totalHours > targetHours) {
+      penalty += (totalHours - targetHours) * 1000;
+    } else if (totalHours < targetHours && totalHours > 0) {
+      penalty -= totalHours * 2;
+    }
+
+    return penalty;
+  }
+
+  canDo(empId, sId) {
+    const emp = this.state.employees?.find((e) => e.id === empId);
+    const srv = this.state.services?.find((s) => s.id === sId);
+    if (!emp || !srv) return false;
+    return (emp.functions || []).includes(srv.functionId);
+  }
+
+  calculateDelta(move) {
+    if (move.valB && !this.canDo(move.empAId, move.valB)) return 999999;
+    if (move.valA && !this.canDo(move.empBId, move.valA)) return 999999;
+
+    const before = this.getEmpPenalty(move.empAId) + this.getEmpPenalty(move.empBId);
+    this.applyMove(move);
+    const after = this.getEmpPenalty(move.empAId) + this.getEmpPenalty(move.empBId);
+
+    const rev = { ...move, valA: move.valB, valB: move.valA };
+    this.applyMove(rev);
+
+    return after - before;
+  }
+
+  updateAssignment(empId, day, val) {
+    if (!this.assignments[empId]) this.assignments[empId] = {};
+    if (!val) delete this.assignments[empId][day];
+    else this.assignments[empId][day] = val;
+  }
+
+  applyMove(move) {
+    this.updateAssignment(move.empAId, move.day, move.valB);
+    this.updateAssignment(move.empBId, move.day, move.valA);
+  }
+
+  calculateTotalPenalty() {
+    return this.employees.reduce((sum, e) => sum + this.getEmpPenalty(e.id), 0);
+  }
+
+  updateScoreHistory() {
+    const entry = {
+      id: Date.now(),
+      month: this.monthKey,
+      initial: Math.round(this.history.initialPenalty),
+      final: Math.round(this.history.finalPenalty),
+      swaps: this.history.swaps,
+      timestamp: new Date().toLocaleString(),
+    };
+    if (!state.optimizerHistory) state.optimizerHistory = [];
+    state.optimizerHistory.unshift(entry);
+  }
+
+  proposeMove() {
+    if (this.employees.length < 2) return null;
+    const day = Math.floor(Math.random() * this.daysInMonth) + 1;
+    const empA = this.employees[Math.floor(Math.random() * this.employees.length)];
+    const empB = this.employees[Math.floor(Math.random() * this.employees.length)];
+    return {
+      day,
+      empAId: empA.id,
+      empBId: empB.id,
+      valA: this.assignments[empA.id]?.[day] || null,
+      valB: this.assignments[empB.id]?.[day] || null,
+    };
+  }
+}
+function totalNightRequirements(monthDate) {
+  let nights = 0;
+  const days = daysInMonth(monthDate);
+  for (let day = 1; day <= days; day++) {
+    const date = new Date(monthDate.getFullYear(), monthDate.getMonth(), day);
+    const req = getRequiredServicesForDate(date);
+    nights += req.filter((s) => isNightService(s)).length;
+  }
+  return nights;
+}
+
+function shuffleArray(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+async function generatePlanSmart() {
+  showNotification('Optimierung läuft... Bitte warten.', 'info');
+
+  const optimizer = new RosterOptimizer(currentMonth, state);
+  const result = await optimizer.run();
+
+  state.assignments[getMonthKey(currentMonth)] = result;
+
+  saveState();
+  renderRoster();
+
+  if (window.renderScoreMenu) renderScoreMenu();
+
+  showNotification(`Generierung abgeschlossen. ${optimizer.history.swaps} Täusche optimiert.`, 'success');
+}
+
+async function generateRoster() {
+  return generatePlanSmart();
+}
+
+function evaluateGlobalCost(
+  monthKey,
+  days,
+  employees,
+  rules,
+  allowedWorkedWeekends,
+  totalNightRequirements,
+  totalHolidayRequirements
+) {
+  let cost = 0;
+
+  for (const emp of employees) {
+    const empId = emp.id;
+    const target = monthlyTargetHours(emp, currentMonth) || 0;
+    const actual = hoursForEmployee(monthKey, empId);
+
+    // STUNDENBILANZ – sehr stark gewichtet
+    if (target > 0) {
+      const relDiff = (actual - target) / target;
+      cost += relDiff * relDiff * 4000; // vorher z.B. 2000 → jetzt stärker
+    } else {
+      cost += actual * actual * 0.5;
+    }
+
+    // Nächte – möglichst fair verteilt
+    const nights = countNights(monthKey, empId);
+    const nightPool = employees.filter((e) => e.nightAllowed).length || 1;
+    const idealNights = totalNightRequirements / nightPool;
+    const nightDiff = nights - idealNights;
+    cost += nightDiff * nightDiff * 300;
+
+    // Wochenenden – nahe an allowedWorkedWeekends
+    const assignments = state.assignments[monthKey]?.[empId] || {};
+    const weekendKeys = new Set();
+    for (let d = 1; d <= days; d++) {
+      const sid = assignments[d];
+      if (!sid) continue;
+      const dt = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), d);
+      if (dt.getDay() === 0 || dt.getDay() === 6) {
+        const wk = weekendKeyForDate(dt);
+        if (wk) weekendKeys.add(wk);
+      }
+    }
+    const weekendCount = weekendKeys.size;
+    const weekendDiff = weekendCount - allowedWorkedWeekends;
+    cost += weekendDiff * weekendDiff * 200;
+
+    // Sonn-/Feiertage – faire Verteilung
+    let holidayCount = 0;
+    for (let d = 1; d <= days; d++) {
+      const sid = assignments[d];
+      if (!sid) continue;
+      const dt = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), d);
+      if (isHoliday(dt) || dt.getDay() === 0) {
+        holidayCount++;
+      }
+    }
+    const idealHoliday = totalHolidayRequirements / Math.max(1, employees.length);
+    const holidayDiff = holidayCount - idealHoliday;
+    cost += holidayDiff * holidayDiff * 120;
+
+    // Tag–Frei–Tag / Einzelinseln hart bestrafen
+    for (let d = 2; d < days; d++) {
+      const prev = assignments[d - 1];
+      const cur = assignments[d];
+      const next = assignments[d + 1];
+      if (prev && !cur && next) cost += 80;
+    }
+    for (let d = 1; d <= days; d++) {
+      const cur = assignments[d];
+      if (!cur) continue;
+      const prev = assignments[d - 1];
+      const next = assignments[d + 1];
+      if (!prev && !next) cost += 30;
+    }
+  }
+
+  return cost;
+}
+
+function collectPlanMetrics(
+  monthKey,
+  days,
+  employees,
+  allowedWorkedWeekends,
+  totalNightRequirements,
+  totalHolidayRequirements
+) {
+  const metrics = {
+    hourVariance: 0,
+    nightVariance: 0,
+    weekendVariance: 0,
+    holidayVariance: 0,
+    isolationPenalty: 0,
+  };
+
+  const nightPool = employees.filter((e) => e.nightAllowed).length || 1;
+  const idealNights = totalNightRequirements / nightPool;
+  const idealHoliday = totalHolidayRequirements / Math.max(1, employees.length);
+
+  employees.forEach((emp) => {
+    const empId = emp.id;
+    const assignments = state.assignments[monthKey]?.[empId] || {};
+    const target = monthlyTargetHours(emp, currentMonth) || 0;
+    const actual = hoursForEmployee(monthKey, empId);
+    const relDiff = target ? (actual - target) / target : 0;
+    metrics.hourVariance += relDiff * relDiff;
+
+    const nights = countNights(monthKey, empId);
+    const nightDiff = nights - idealNights;
+    metrics.nightVariance += nightDiff * nightDiff;
+
+    const weekendKeys = new Set();
+    let holidayCount = 0;
+    for (let d = 1; d <= days; d++) {
+      const sid = assignments[d];
+      if (!sid) continue;
+      const dt = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), d);
+      if (dt.getDay() === 0 || dt.getDay() === 6) {
+        const wk = weekendKeyForDate(dt);
+        if (wk) weekendKeys.add(wk);
+      }
+      if (isHoliday(dt) || dt.getDay() === 0) {
+        holidayCount++;
+      }
+      const prev = assignments[d - 1];
+      const next = assignments[d + 1];
+      if (prev && !assignments[d] && next) metrics.isolationPenalty += 1;
+      if (assignments[d] && !prev && !next) metrics.isolationPenalty += 0.5;
+    }
+    const weekendDiff = weekendKeys.size - allowedWorkedWeekends;
+    metrics.weekendVariance += weekendDiff * weekendDiff;
+    const holidayDiff = holidayCount - idealHoliday;
+    metrics.holidayVariance += holidayDiff * holidayDiff;
+  });
+
+  const divisor = Math.max(1, employees.length);
+  metrics.hourVariance /= divisor;
+  metrics.nightVariance /= divisor;
+  metrics.weekendVariance /= divisor;
+  metrics.holidayVariance /= divisor;
+  metrics.isolationPenalty /= divisor;
+  return metrics;
+}
+
+function recordOptimizerHistory(entry) {
+  const profile = loadOptimizerProfile();
+  const history = Array.isArray(profile.history) ? profile.history.slice() : [];
+  history.push(entry);
+  profile.history = history.slice(-50);
+  saveOptimizerProfile(profile);
+}
+
+
+function optimizeRosterLocally(config) {
+  const {
+    monthKey,
+    days,
+    employees,
+    rules,
+    allowedWorkedWeekends,
+    totalNightRequirements,
+    totalHolidayRequirements,
+  } = config;
+
+  let bestCost = evaluateGlobalCost(
+    monthKey,
+    days,
+    employees,
+    rules,
+    allowedWorkedWeekends,
+    totalNightRequirements,
+    totalHolidayRequirements
+  );
+
+  const maxIterations = 1500;
+
+  for (let iter = 0; iter < maxIterations; iter++) {
+    // Stundenbilanz ermitteln
+    const hourInfo = employees.map((emp) => {
+      const target = monthlyTargetHours(emp, currentMonth) || 0;
+      const current = hoursForEmployee(monthKey, emp.id);
+      const diff = target ? current - target : 0; // >0 = Überstunden
+      return { emp, target, current, diff };
+    });
+
+    const donors = hourInfo
+      .filter((h) => h.diff > 2) // deutlich über Ziel
+      .sort((a, b) => b.diff - a.diff); // stärkste Überstunden zuerst
+    const receivers = hourInfo
+      .filter((h) => h.diff < -2) // deutlich unter Ziel
+      .sort((a, b) => a.diff - b.diff); // stärkste Unterdeckung zuerst
+
+    if (!donors.length || !receivers.length) break;
+
+    const donor = donors[Math.min(Math.floor(Math.random() * 3), donors.length - 1)].emp;
+    const receiver = receivers[Math.min(Math.floor(Math.random() * 3), receivers.length - 1)].emp;
+
+    const donorAssignments = state.assignments[monthKey][donor.id] || {};
+    const receiverAssignments = state.assignments[monthKey][receiver.id] || {};
+
+    const candidateDays = [];
+    for (let day = 1; day <= days; day++) {
+      const sid = donorAssignments[day];
+      if (!sid) continue;
+      if (receiverAssignments[day]) continue;
+
+      const service = state.services.find((s) => s.id === sid);
+      if (!service) continue;
+
+      // Nachtdienste lassen wir hier bewusst in Ruhe
+      if (isNightService(service)) continue;
+
+      const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
+
+      if (state.locks[monthKey]?.[donor.id]?.[day]) continue;
+      if (state.locks[monthKey]?.[receiver.id]?.[day]) continue;
+      if (!isEmployeeActiveOnDate(receiver, date)) continue;
+      if (findVacationOnDate(receiver, date) || findSickOnDate(receiver, date)) continue;
+      if (!employeeAllowedForService(receiver, service)) continue;
+      if (isDayAfterNight(receiver, date)) continue; // NIE Dienst am Tag nach Nacht
+
+      candidateDays.push({ day, serviceId: sid });
+    }
+
+    if (!candidateDays.length) continue;
+    const { day, serviceId } = candidateDays[Math.floor(Math.random() * candidateDays.length)];
+    const service = state.services.find((s) => s.id === serviceId);
+    const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
+
+    // Probeweise verschieben
+    delete donorAssignments[day];
+    receiverAssignments[day] = serviceId;
+    state.assignments[monthKey][donor.id] = donorAssignments;
+    state.assignments[monthKey][receiver.id] = receiverAssignments;
+
+    // Grobe harte Grenzen: Überstunden nicht explodieren lassen
+    const targetReceiver = monthlyTargetHours(receiver, currentMonth) || 0;
+    const hoursReceiver = hoursForEmployee(monthKey, receiver.id);
+    if (targetReceiver && hoursReceiver > targetReceiver + 12) {
+      // Rückgängig machen
+      delete receiverAssignments[day];
+      donorAssignments[day] = serviceId;
+      state.assignments[monthKey][donor.id] = donorAssignments;
+      state.assignments[monthKey][receiver.id] = receiverAssignments;
+      continue;
+    }
+
+    if (rules.maxNights) {
+      const nightsReceiver = countNights(monthKey, receiver.id);
+      if (nightsReceiver > rules.maxNights) {
+        delete receiverAssignments[day];
+        donorAssignments[day] = serviceId;
+        state.assignments[monthKey][donor.id] = donorAssignments;
+        state.assignments[monthKey][receiver.id] = receiverAssignments;
+        continue;
+      }
+    }
+
+    const newCost = evaluateGlobalCost(
+      monthKey,
+      days,
+      employees,
+      rules,
+      allowedWorkedWeekends,
+      totalNightRequirements,
+      totalHolidayRequirements
+    );
+
+    if (newCost <= bestCost) {
+      bestCost = newCost; // Verbesserung behalten
+    } else {
+      // schlechter → zurückrollen
+      delete receiverAssignments[day];
+      donorAssignments[day] = serviceId;
+      state.assignments[monthKey][donor.id] = donorAssignments;
+      state.assignments[monthKey][receiver.id] = receiverAssignments;
+    }
+  }
+}
+
+function clearRosterAssignments() {
   const monthKey = getMonthKey(currentMonth);
   ensureMonthMaps(monthKey);
   const days = daysInMonth(currentMonth);
-  const rules = state.rules;
-  const totalWeekends = totalWeekendsInMonth(currentMonth);
-  const minFreeWeekends = Number(rules.minFreeWeekends) || 0;
-  const allowedWorkedWeekends = Math.max(totalWeekends - minFreeWeekends, 0);
-  const orderedEmployees = getOrderedEmployees().filter((emp) => isEmployeeFullMonth(emp, currentMonth));
-  const rawPivot = Number(state.layout?.generatorPivot) || 0;
-  const pivot = orderedEmployees.length ? rawPivot % orderedEmployees.length : 0;
-  const rotated = orderedEmployees.slice(pivot).concat(orderedEmployees.slice(0, pivot));
-  const weekendSets = new Map();
-  const getWeekendSet = (empId) => {
-    if (!weekendSets.has(empId)) {
-      weekendSets.set(empId, workedWeekendSet(monthKey, empId));
-    }
-    return weekendSets.get(empId);
-  };
-
-  // Bestehende, nicht gesperrte Einträge für den Monat zurücksetzen
   state.employees.forEach((emp) => {
-    if (!state.assignments[monthKey][emp.id]) state.assignments[monthKey][emp.id] = {};
+    const monthAssignments = state.assignments[monthKey]?.[emp.id];
+    if (!monthAssignments) return;
     for (let day = 1; day <= days; day++) {
       const locked = state.locks[monthKey]?.[emp.id]?.[day];
       const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
       const vacationEntry = findVacationOnDate(emp, date);
       const sickEntry = findSickOnDate(emp, date);
       const keepAssignment =
+        locked ||
         (vacationEntry && VACATION_TYPES[vacationEntry.type]?.clearsAssignments === false) ||
         (sickEntry && SICK_TYPES[sickEntry.kind]?.clearsAssignments === false);
-      if (!locked && !keepAssignment) {
-        delete state.assignments[monthKey][emp.id][day];
+      if (!keepAssignment) {
+        delete monthAssignments[day];
       }
     }
-  });
-
-  for (let day = 1; day <= days; day++) {
-    const currentDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
-    const servicesForDay = getRequiredServicesForDate(currentDate);
-    for (const service of servicesForDay) {
-      rotated
-        .filter((emp) => {
-          if (!isEmployeeActiveOnDate(emp, currentDate)) return false;
-          const func = state.functions.find((f) => f.id === emp.functionId);
-          const allowed = Array.isArray(func?.serviceIds) && func.serviceIds.includes(service.id);
-          if (!allowed) return false;
-          if (findVacationOnDate(emp, currentDate)) return false;
-          if (findSickOnDate(emp, currentDate)) return false;
-          if (isNightService(service) && !emp.nightAllowed) return false;
-          return true;
-        })
-        .some((emp) => {
-          ensureMonthMaps(monthKey);
-          const locked = state.locks[monthKey]?.[emp.id]?.[day];
-          if (locked) return false;
-          if (!state.assignments[monthKey][emp.id]) state.assignments[monthKey][emp.id] = {};
-          const already = state.assignments[monthKey][emp.id][day];
-          if (already) return false;
-          if (rules.restDays && workedRecently(emp.id, day, rules.restDays)) return false;
-          if (isNightService(service) && !emp.doubleNights) {
-            const prev = state.assignments[monthKey][emp.id][day - 1];
-            if (prev) {
-              const prevService = state.services.find((s) => s.id === prev);
-              if (isNightService(prevService)) return false;
-            }
-          }
-          const targetHours = monthlyTargetHours(emp, currentMonth);
-          const nextHours = hoursForEmployee(monthKey, emp.id) + serviceDuration(service);
-          if (targetHours && nextHours > targetHours) return false;
-          const nextNights = countNights(monthKey, emp.id) + (isNightService(service) ? 1 : 0);
-          if (rules.maxNights && nextNights > rules.maxNights) return false;
-          if (isWeekend(currentDate)) {
-            const weekendKey = weekendKeyForDate(currentDate);
-            const set = getWeekendSet(emp.id);
-            if (weekendKey && !set.has(weekendKey) && set.size >= allowedWorkedWeekends) {
-              return false;
-            }
-          }
-          state.assignments[monthKey][emp.id][day] = service.id;
-          if (isWeekend(currentDate)) {
-            const weekendKey = weekendKeyForDate(currentDate);
-            if (weekendKey) {
-              getWeekendSet(emp.id).add(weekendKey);
-            }
-          }
-          return true;
-        });
+    if (!Object.keys(monthAssignments).length) {
+      delete state.assignments[monthKey][emp.id];
     }
-  }
-  const label = currentMonth.toLocaleDateString('de-AT', { month: 'long', year: 'numeric' });
-  state.layout.generatorPivot = rotated.length ? (pivot + 1) % rotated.length : 0;
-  appendLog('roster', `Dienstplan für ${label} generiert.`);
+  });
+  appendLog('roster', 'Dienstplan für den Monat geleert.', monthKey);
   saveState();
   renderRoster();
 }
 
 function syncEmploymentHours() {
+  if (!employmentPercentSelect || !employmentHoursSelect) return;
   employmentPercentSelect.addEventListener('change', () => {
     const selected = state.employment.find((e) => e.id === employmentPercentSelect.value);
     if (selected) {
@@ -2802,11 +5207,22 @@ function syncEmploymentHours() {
 
 function handleEmployeePickerChange() {
   const id = employeePicker.value;
+  const isAdmin = !!currentUser?.permissions?.admin;
+  const selfEmp = getCurrentEmployee();
+  if (!isAdmin && selfEmp && id !== selfEmp.id) {
+    employeePicker.value = selfEmp.id;
+    editing.employee = selfEmp.id;
+    fillEmployeeForm(selfEmp);
+    renderVacationPanel(selfEmp);
+    renderSickPanel(selfEmp);
+    return;
+  }
   if (!id) {
     editing.employee = null;
     employeeForm.reset();
     renderVacationPanel(null);
     renderSickPanel(null);
+    if (employeeExitBtn) employeeExitBtn.disabled = true;
     return;
   }
   const emp = state.employees.find((e) => e.id === id);
@@ -2837,9 +5253,7 @@ function handleFunctionPickerChange() {
   if (!id) {
     editing.function = null;
     functionForm.reset();
-    Array.from(functionServices.options).forEach((opt) => {
-      opt.selected = false;
-    });
+    renderFunctionServiceChoices([]);
     return;
   }
   const func = state.functions.find((f) => f.id === id);
@@ -2863,81 +5277,251 @@ function handleEmploymentPickerChange() {
   }
 }
 
+function handleTicketSubmit(event) {
+  event.preventDefault();
+  if (!canCreateTickets()) {
+    showNotification('Keine Berechtigung zum Erstellen', 'error');
+    return;
+  }
+  autoFillTicketReporterEmail(true);
+  const name = (ticketNameInput?.value || '').trim();
+  const priority = ticketPriorityInput?.value || TICKET_PRIORITIES[1];
+  const area = ticketAreaInput?.value || AREAS[0];
+  const description = ticketDescriptionInput?.value || '';
+  const reporterName = (ticketReporterInput?.value || 'Alois Reichsöllner').trim();
+  const reporterEmail = (ticketReporterEmailInput?.value || '').trim();
+  if (!name) {
+    showNotification('Fehler beim Speichern', 'error');
+    return;
+  }
+  const ticket = {
+    id: uuid(),
+    ticketNumber: generateTicketNumber(),
+    name,
+    priority: TICKET_PRIORITIES.includes(priority) ? priority : TICKET_PRIORITIES[1],
+    area,
+    description,
+    status: TICKET_STATUSES[0],
+    reporterName: reporterName || 'Alois Reichsöllner',
+    reporterEmail,
+    createdAt: new Date().toISOString(),
+    assignee: '',
+    updates: [
+      {
+        id: uuid(),
+        status: TICKET_STATUSES[0],
+        note: 'Ticket erstellt',
+        timestamp: new Date().toISOString(),
+        notify: false,
+      },
+    ],
+  };
+  state.tickets = [ticket, ...(state.tickets || [])];
+  appendLog('tickets', `Neues Ticket '${ticket.name}' erfasst.`, ticket.id);
+  saveState();
+  if (ticketForm) ticketForm.reset();
+  if (ticketPriorityInput) ticketPriorityInput.value = 'mittel';
+  if (ticketStatusFilter) ticketStatusFilter.value = 'all';
+  if (ticketReporterInput) ticketReporterInput.value = 'Alois Reichsöllner';
+  renderTickets();
+  showScreen('tickets');
+  showNotification('Eintrag erfolgreich gespeichert', 'success');
+}
+
+function handleTicketFilterChange() {
+  renderTickets();
+}
+
+function sendTicketEmail(ticket, body) {
+  if (!ticket?.reporterEmail) {
+    showNotification('Keine E-Mail-Adresse des Einmelders hinterlegt', 'error');
+    return;
+  }
+  const payload = {
+    to: ticket.reporterEmail,
+    subject: `${ticket.ticketNumber || ticket.id} - ${ticket.name}`,
+    body,
+    sentAt: new Date().toISOString(),
+  };
+  state.sentEmails = [payload, ...(state.sentEmails || [])].slice(0, 200);
+  saveState();
+  showNotification('E-Mail-Benachrichtigung versendet', 'success');
+}
+
+function handleTicketCardAction(event) {
+  const button = event.target.closest('button[data-ticket-submit]');
+  if (!button) return;
+  if (!canManageTickets()) {
+    showNotification('Keine Berechtigung zum Aktualisieren', 'error');
+    return;
+  }
+  const ticketId = button.dataset.ticketSubmit;
+  const ticket = state.tickets.find((t) => t.id === ticketId);
+  if (!ticket) return;
+  const card = button.closest('[data-ticket-id]');
+  const statusSelect = card?.querySelector(`select[data-ticket-status="${ticketId}"]`);
+  const noteField = card?.querySelector(`textarea[data-ticket-note="${ticketId}"]`);
+  const notifyField = card?.querySelector(`input[data-ticket-notify="${ticketId}"]`);
+  const status = statusSelect && TICKET_STATUSES.includes(statusSelect.value) ? statusSelect.value : ticket.status;
+  const note = (noteField?.value || '').trim();
+  const notify = !!notifyField?.checked;
+  const previousStatus = ticket.status;
+  const actor = currentUser?.name || 'Hans Maier';
+  const timestamp = new Date().toISOString();
+  const timestampLabel = new Date(timestamp).toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' });
+  let autoNote = 'Aktualisiert';
+  if (status === 'in Bearbeitung' && previousStatus !== 'in Bearbeitung') {
+    autoNote = `Bearbeitung übernommen durch ${actor} am ${timestampLabel}`;
+  } else if (status === 'Geschlossen' && previousStatus !== 'Geschlossen') {
+    autoNote = `Ticket abgeschlossen von ${actor} am ${timestampLabel}`;
+  } else if (status !== previousStatus) {
+    autoNote = `Status geändert durch ${actor}: ${previousStatus} → ${status} (${timestampLabel})`;
+  }
+  const entry = {
+    id: uuid(),
+    status,
+    note: note || autoNote,
+    timestamp,
+    notify,
+    actor,
+  };
+  ticket.status = status;
+  if (status === 'in Bearbeitung') {
+    ticket.assignee = actor;
+    ticket.assignedAt = timestamp;
+  }
+  ticket.closedAt = status === 'Geschlossen' ? timestamp : status === previousStatus ? ticket.closedAt || '' : '';
+  ticket.updates = [entry, ...(ticket.updates || [])].slice(0, 100);
+  appendLog('tickets', `Ticket '${ticket.name}' auf '${status}' aktualisiert.`, ticket.id);
+  saveState();
+  if (noteField) noteField.value = '';
+  if (notifyField) notifyField.checked = false;
+  updateTicketActionLabel(card);
+  renderTickets();
+  showNotification('Änderung erfolgreich gespeichert', 'success');
+  if (notify && ticket.reporterEmail) {
+    const body = `${note || autoNote}\nStatus: ${status}\nTicket: ${ticket.ticketNumber || ticket.id} - ${ticket.name}`;
+    sendTicketEmail(ticket, body);
+  }
+}
+
 function wireEvents() {
-  menuButtons.forEach((btn) => btn.addEventListener('click', () => showScreen(btn.dataset.target)));
-  employeeForm.addEventListener('submit', handleEmployeeForm);
-  employeeForm.addEventListener('reset', handleEmployeeFormReset);
-  serviceForm.addEventListener('submit', handleServiceForm);
-  functionForm.addEventListener('submit', handleFunctionForm);
-  employmentForm.addEventListener('submit', handleEmploymentForm);
-  rulesForm.addEventListener('submit', handleRulesForm);
-  rosterTable.addEventListener('change', handleRosterChange);
-  rosterTable.addEventListener('click', handleRosterClick);
-  rosterTable.addEventListener('dragstart', handleRowDragStart);
-  rosterTable.addEventListener('dragover', handleRowDragOver);
-  rosterTable.addEventListener('drop', handleRowDrop);
-  rosterTable.addEventListener('dragend', handleRowDragEnd);
-  employeePicker.addEventListener('change', handleEmployeePickerChange);
-  servicePicker.addEventListener('change', handleServicePickerChange);
-  functionPicker.addEventListener('change', handleFunctionPickerChange);
-  employmentPicker.addEventListener('change', handleEmploymentPickerChange);
-  prevMonthBtn.addEventListener('click', () => {
+  const on = (el, event, handler) => {
+    if (el && typeof el.addEventListener === 'function') el.addEventListener(event, handler);
+  };
+  const onAll = (list, event, handler) => {
+    if (!list) return;
+    list.forEach((el) => on(el, event, handler));
+  };
+
+  on(loginForm, 'submit', handleLogin);
+  on(logoutBtn, 'click', handleLogout);
+  onAll(menuButtons, 'click', (evt) => showScreen(evt.currentTarget.dataset.target));
+  on(employeeForm, 'submit', handleEmployeeForm);
+  on(employeeForm, 'reset', handleEmployeeFormReset);
+  on(employeeExitBtn, 'click', handleEmployeeExit);
+  on(employeeList, 'click', handleEmployeeListClick);
+  on(overviewApprovals, 'click', handleOverviewClick);
+  on(serviceForm, 'submit', handleServiceForm);
+  on(functionForm, 'submit', handleFunctionForm);
+  on(functionForm, 'reset', () => {
+    editing.function = null;
+    renderFunctionServiceChoices([]);
+  });
+  on(functionList, 'click', handleFunctionListClick);
+  on(employmentForm, 'submit', handleEmploymentForm);
+  on(rulesForm, 'submit', handleRulesForm);
+  on(rosterTable, 'change', handleRosterChange);
+  on(rosterTable, 'click', handleRosterClick);
+  on(rosterTable, 'dragstart', handleRowDragStart);
+  on(rosterTable, 'dragover', handleRowDragOver);
+  on(rosterTable, 'drop', handleRowDrop);
+  on(rosterTable, 'dragend', handleRowDragEnd);
+  on(employeePicker, 'change', handleEmployeePickerChange);
+  on(servicePicker, 'change', handleServicePickerChange);
+  on(functionPicker, 'change', handleFunctionPickerChange);
+  on(employmentPicker, 'change', handleEmploymentPickerChange);
+  on(yearOverviewPrev, 'click', () => changeYearOverview(-1));
+  on(yearOverviewNext, 'click', () => changeYearOverview(1));
+  on(prevMonthBtn, 'click', () => {
     currentMonth.setMonth(currentMonth.getMonth() - 1);
     renderRoster();
     renderEmployees();
   });
-  nextMonthBtn.addEventListener('click', () => {
+  on(nextMonthBtn, 'click', () => {
     currentMonth.setMonth(currentMonth.getMonth() + 1);
     renderRoster();
     renderEmployees();
   });
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowLeft') {
-      currentMonth.setMonth(currentMonth.getMonth() - 1);
-      renderRoster();
-      renderEmployees();
+  if (typeof window !== 'undefined') {
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowLeft') {
+        currentMonth.setMonth(currentMonth.getMonth() - 1);
+        renderRoster();
+        renderEmployees();
+      }
+      if (e.key === 'ArrowRight') {
+        currentMonth.setMonth(currentMonth.getMonth() + 1);
+        renderRoster();
+        renderEmployees();
+      }
+    });
+  }
+  on(generateBtn, 'click', generatePlanSmart);
+  on(clearBtn, 'click', () => {
+    if (!canEditRoster()) {
+      showNotification('Keine Berechtigung', 'error');
+      return;
     }
-    if (e.key === 'ArrowRight') {
-      currentMonth.setMonth(currentMonth.getMonth() + 1);
-      renderRoster();
-      renderEmployees();
+    if (confirm('Dienstplan-Einträge für diesen Monat leeren? Urlaube, Krankenstände und gesperrte Tage bleiben erhalten.')) {
+      clearRosterAssignments();
+      showNotification('Dienstplan bereinigt', 'success');
     }
   });
-  generateBtn.addEventListener('click', generateRoster);
-  saveFileBtn.addEventListener('click', downloadStateFile);
-  loadFileBtn.addEventListener('click', () => loadFileInput.click());
-  loadFileInput.addEventListener('change', (e) => {
+  on(saveFileBtn, 'click', downloadStateFile);
+  on(loadFileBtn, 'click', () => loadFileInput?.click());
+  on(loadFileInput, 'change', (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     file.text().then(importState).finally(() => {
       loadFileInput.value = '';
     });
   });
-  if (addVacationBtn) addVacationBtn.addEventListener('click', handleAddVacation);
-  if (vacationTypeSelect) vacationTypeSelect.addEventListener('change', updateVacationReasonVisibility);
-  if (vacationList) vacationList.addEventListener('click', handleVacationListClick);
-  if (addSickBtn) addSickBtn.addEventListener('click', handleAddSick);
+  on(addVacationBtn, 'click', handleAddVacation);
+  on(vacationTypeSelect, 'change', updateVacationReasonVisibility);
+  on(vacationList, 'click', handleVacationListClick);
+  on(addSickBtn, 'click', handleAddSick);
   if (sickList) {
-    sickList.addEventListener('click', handleSickListClick);
-    sickList.addEventListener('change', handleSickListChange);
+    on(sickList, 'click', handleSickListClick);
+    on(sickList, 'change', handleSickListChange);
   }
-  if (vacationLimitForm) vacationLimitForm.addEventListener('submit', handleVacationLimitSubmit);
-  if (vacationLimitList) vacationLimitList.addEventListener('click', handleVacationLimitListClick);
-  if (themeToggle) {
-    themeToggle.addEventListener('click', () => applyTheme(currentTheme === 'light' ? 'dark' : 'light'));
-  }
+  on(vacationLimitForm, 'submit', handleVacationLimitSubmit);
+  on(vacationLimitList, 'click', handleVacationLimitListClick);
+  on(themeToggle, 'click', () => applyTheme(currentTheme === 'light' ? 'dark' : 'light'));
   if (rosterModeButtons.length) {
     rosterModeButtons.forEach((btn) => {
-      btn.addEventListener('click', () => setRosterMode(btn.dataset.rosterMode || 'edit'));
+      on(btn, 'click', () => setRosterMode(btn.dataset.rosterMode || 'edit'));
     });
   }
-  if (printPlanBtn) {
-    printPlanBtn.addEventListener('click', handlePrintPlan);
+  on(printPlanBtn, 'click', handlePrintPlan);
+  on(createGroupBtn, 'click', handleCreateGroup);
+  on(assignGroupBtn, 'click', handleAssignGroup);
+  on(removeGroupBtn, 'click', handleRemoveGroup);
+  on(groupSelect, 'change', updateRowToolStates);
+  on(ticketForm, 'submit', handleTicketSubmit);
+  on(ticketForm, 'reset', () => {
+    if (ticketPriorityInput) ticketPriorityInput.value = 'mittel';
+    if (ticketReporterInput) ticketReporterInput.value = 'Alois Reichsöllner';
+    autoFillTicketReporterEmail(true);
+    if (ticketAreaInput) ticketAreaInput.value = AREAS[0];
+  });
+  on(ticketStatusFilter, 'change', handleTicketFilterChange);
+  if (ticketList) {
+    on(ticketList, 'click', handleTicketCardAction);
+    on(ticketList, 'change', handleTicketCardChange);
   }
-  if (createGroupBtn) createGroupBtn.addEventListener('click', handleCreateGroup);
-  if (assignGroupBtn) assignGroupBtn.addEventListener('click', handleAssignGroup);
-  if (removeGroupBtn) removeGroupBtn.addEventListener('click', handleRemoveGroup);
-  if (groupSelect) groupSelect.addEventListener('change', updateRowToolStates);
+  on(missionSaveBtn, 'click', handleMissionSave);
+  on(missionRefreshBtn, 'click', () => refreshMissionFeed(true));
   syncEmploymentHours();
 }
 
@@ -2953,19 +5537,55 @@ function handlePrintPlan() {
 }
 
 function init() {
-  applyTheme(currentTheme);
-  updateDropdowns();
-  showScreen('roster');
-  renderEmployees();
-  renderServices();
-  renderFunctions();
-  renderEmployment();
-  setupWeekdayInteractions();
-  renderRules();
-  renderRoster();
-  renderLogs();
-  updateVacationReasonVisibility();
-  wireEvents();
+  const steps = [];
+  const run = (label, fn) => {
+    try {
+      fn();
+      return true;
+    } catch (err) {
+      console.error(`Fehler in Schritt ${label}`, err);
+      return false;
+    }
+  };
+
+  steps.push(run('applyTheme', () => applyTheme(currentTheme)));
+  steps.push(run('updateDropdowns', updateDropdowns));
+  steps.push(run('setLoginStatus', () => (loginStatus ? (loginStatus.textContent = 'Bitte einloggen.') : null)));
+  steps.push(run('disableExit', () => (employeeExitBtn ? (employeeExitBtn.disabled = true) : null)));
+  steps.push(run('updateExitedEmployees', () => updateExitedEmployees()));
+  steps.push(run('renderEmployees', renderEmployees));
+  steps.push(run('renderServices', renderServices));
+  steps.push(run('renderFunctions', renderFunctions));
+  steps.push(run('renderEmployment', renderEmployment));
+  steps.push(run('setupWeekdayInteractions', setupWeekdayInteractions));
+  steps.push(run('renderRules', renderRules));
+  steps.push(run('renderRoster', renderRoster));
+  steps.push(run('renderLogs', renderLogs));
+  steps.push(run('updateVacationReasonVisibility', updateVacationReasonVisibility));
+  steps.push(run('renderTickets', renderTickets));
+  steps.push(run('renderMissionBoard', renderMissionBoard));
+  steps.push(run('wireEvents', wireEvents));
+  steps.push(run('forceDefaultLogin', forceDefaultLogin));
+  steps.push(run('applyPermissions', applyPermissions));
+
+  if (steps.some((ok) => !ok)) {
+    showNotification('Fehler beim Starten der Anwendung', 'error');
+  }
+}
+
+function initSafely() {
+  try {
+    init();
+  } catch (err) {
+    console.error('Fehler beim Initialisieren', err);
+    showNotification('Fehler beim Starten der Anwendung', 'error');
+    try {
+      if (!currentUser) forceDefaultLogin();
+      applyPermissions();
+    } catch (nestedError) {
+      console.error('Konnte Fallback-Login nicht anwenden', nestedError);
+    }
+  }
 }
 
 if (typeof window !== 'undefined') {
@@ -2979,7 +5599,7 @@ if (typeof window !== 'undefined') {
 }
 
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
+  document.addEventListener('DOMContentLoaded', initSafely);
 } else {
-  init();
+  initSafely();
 }

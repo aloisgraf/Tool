@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Konfigurierbare Admin- und Planungsoberfläche für Monatsdienstpläne mit lokalem Speicher.">
   <title>Dienstplan-Admin</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -12,14 +13,40 @@
       <p class="eyebrow">Dienstplanung · Salzburg</p>
       <h1>Dienstplan- und Admin-Console</h1>
     </div>
-    <div class="theme-toggle">
-      <span>Darstellung</span>
-      <button type="button" id="themeToggle" class="ghost">Heller Modus</button>
+    <div class="page-header__actions">
+      <div class="theme-toggle">
+        <span>Darstellung</span>
+        <button type="button" id="themeToggle" class="ghost">Heller Modus</button>
+      </div>
+      <form id="loginForm" class="login-box">
+        <div class="login-fields">
+          <label>Personalnummer<input id="loginUser" name="loginUser" autocomplete="username"></label>
+          <label>Passwort<input id="loginPassword" type="password" name="loginPassword" autocomplete="current-password"></label>
+        </div>
+        <div class="login-actions">
+          <button type="submit" class="primary">Login</button>
+          <button type="button" id="logoutBtn" class="ghost" hidden>Logout</button>
+        </div>
+        <p id="loginStatus" class="muted"></p>
+      </form>
     </div>
   </header>
 
-  <main class="layout">
+  <main class="layout" id="appShell" hidden>
     <nav class="main-menu" aria-label="Hauptmenü">
+      <details class="menu-accordion" open>
+        <summary>
+          <span class="menu-icon" aria-hidden="true">📊</span>
+          <span>Übersicht</span>
+        </summary>
+        <div class="menu-accordion__body">
+          <div class="menu-group__items">
+            <button type="button" data-target="overview" class="active">Übersicht</button>
+            <button type="button" data-target="yearOverview" data-permission="admin">Jahresübersicht</button>
+            <button type="button" data-target="scoreHistory" data-permission="admin">Score</button>
+          </div>
+        </div>
+      </details>
       <details class="menu-accordion" open>
         <summary>
           <span class="menu-icon" aria-hidden="true">📅</span>
@@ -27,7 +54,7 @@
         </summary>
         <div class="menu-accordion__body">
           <div class="menu-group__items">
-            <button type="button" data-target="roster" class="active">Dienstplan</button>
+            <button type="button" data-target="roster">Dienstplan</button>
             <button type="button" data-target="employees" id="menuEmployeesBtn">Mitarbeiter<span class="alert-indicator" id="menuEmployeeAlert" aria-hidden="true" hidden></span></button>
             <button type="button" data-target="services">Dienste</button>
             <button type="button" data-target="functions">Funktionen</button>
@@ -48,7 +75,7 @@
               <button type="button" id="removeGroupBtn" class="ghost" disabled>Aus Gruppe lösen</button>
             </div>
           </div>
-          <div class="menu-file-actions" aria-label="Datenspeicherung">
+          <div class="menu-file-actions" aria-label="Datenspeicherung" data-permission="admin">
             <p class="eyebrow">Datenablage</p>
             <div class="file-actions__buttons">
               <button type="button" id="saveFile" class="ghost">Speichern als Datei</button>
@@ -58,14 +85,84 @@
           </div>
         </div>
       </details>
+      <details class="menu-accordion" open>
+        <summary>
+          <span class="menu-icon" aria-hidden="true">🎟️</span>
+          <span>Tickets</span>
+        </summary>
+        <div class="menu-accordion__body">
+          <div class="menu-group__items">
+            <button type="button" data-target="ticketCreate">Ticket erstellen</button>
+            <button type="button" data-target="tickets">Tickets</button>
+          </div>
+        </div>
+      </details>
+      <details class="menu-accordion" open>
+        <summary>
+          <span class="menu-icon" aria-hidden="true">🚑</span>
+          <span>Einsatzzeiten</span>
+        </summary>
+        <div class="menu-accordion__body">
+          <div class="menu-group__items">
+            <button type="button" data-target="missions">Einsatzzeiten</button>
+          </div>
+        </div>
+      </details>
     </nav>
 
     <div class="content-area">
+      <section class="panel admin" data-screen="overview" hidden>
+        <div class="panel__header">
+          <h2>Übersicht</h2>
+        </div>
+        <div class="overview-grid">
+          <section class="overview-block" id="overviewApprovalsBlock" hidden>
+            <div class="overview-header">
+              <p class="eyebrow">Freigaben</p>
+              <h3>Urlaubsanträge</h3>
+            </div>
+            <div id="overviewApprovals" class="list"></div>
+          </section>
+          <section class="overview-block">
+            <div class="overview-header">
+              <p class="eyebrow">Dienste</p>
+              <h3>Nächste Dienste</h3>
+            </div>
+            <div id="overviewServices" class="list"></div>
+          </section>
+          <section class="overview-block">
+            <div class="overview-header">
+              <p class="eyebrow">Urlaube</p>
+              <h3>Nächste Urlaube</h3>
+            </div>
+            <div id="overviewVacations" class="list"></div>
+          </section>
+          <section class="overview-block">
+            <div class="overview-header">
+              <p class="eyebrow">Tickets</p>
+              <h3>Meine Tickets</h3>
+            </div>
+            <div id="overviewMyTickets" class="list"></div>
+          </section>
+          <section class="overview-block" id="overviewAssignedBlock" hidden>
+            <div class="overview-header">
+              <p class="eyebrow">Bearbeitung</p>
+              <h3>Übernommene Tickets</h3>
+            </div>
+            <div id="overviewAssigned" class="list"></div>
+          </section>
+        </div>
+      </section>
+
       <section class="panel roster-panel" data-screen="roster">
         <div class="panel__header roster-header">
-          <div>
+          <div class="roster-heading">
             <p class="eyebrow">Monatsraster</p>
-            <h2 id="monthLabel"></h2>
+            <div class="month-display">
+              <button type="button" id="prevMonth" class="ghost" aria-label="Vorheriger Monat">◀</button>
+              <h2 id="monthLabel"></h2>
+              <button type="button" id="nextMonth" class="ghost" aria-label="Nächster Monat">▶</button>
+            </div>
             <p class="muted">Navigation mit Pfeiltasten ←/→ möglich. Samstage sind hellgrau, Sonntage dunkelgrau, Feiertage in Salzburg gelb.</p>
           </div>
           <div class="actions">
@@ -73,11 +170,9 @@
               <button type="button" class="ghost active" data-roster-mode="edit">Dienstplan bearbeiten</button>
               <button type="button" class="ghost" data-roster-mode="view">Dienstplan Ansicht</button>
             </div>
-            <div class="month-controls">
-              <button type="button" id="prevMonth" class="ghost">◀</button>
-              <button type="button" id="nextMonth" class="ghost">▶</button>
-            </div>
-            <button id="generatePlan" type="button" class="primary">Dienstplan generieren</button>
+            <div class="action-spacer"></div>
+            <button id="clearPlan" type="button" class="ghost" data-permission="roster-write">Dienstplan leeren</button>
+            <button id="generatePlan" type="button" class="primary" data-permission="roster-write">Dienstplan generieren</button>
             <button id="printPlan" type="button" class="ghost">Dienstplan drucken</button>
           </div>
         </div>
@@ -85,13 +180,6 @@
           <table id="rosterTable" aria-describedby="monthLabel"></table>
         </div>
         <div id="serviceLegend" class="service-legend"></div>
-        <section class="overview-block roster-vacations">
-          <div class="overview-header">
-            <p class="eyebrow">Urlaubsbelegung</p>
-            <h3>Auslastung pro Tag</h3>
-          </div>
-          <div id="vacationChart" class="vacation-chart" aria-live="polite"></div>
-        </section>
         <details class="log-panel">
           <summary>Log anzeigen</summary>
           <ul id="rosterLog" class="log-list"></ul>
@@ -113,32 +201,65 @@
             <label>Nachname<input name="lastName" required></label>
             <label>Personalnummer<input name="personnelNumber" required></label>
             <label>Geburtstag<input type="date" name="birthday" required></label>
-            <label>Anstellung in %
-              <select name="employmentPercent" id="employmentPercentSelect"></select>
-            </label>
-            <label>Anstellung in Stunden pro Monat
-              <select name="employmentHours" id="employmentHoursSelect"></select>
-            </label>
-            <label>Funktion
-              <select name="functionId" id="functionSelect"></select>
-            </label>
-            <label>Eintrittsdatum<input type="date" name="hireDate"></label>
-            <label>Austrittsdatum<input type="date" name="endDate"></label>
-            <label>Durchrechnungsfaktor<input type="number" name="holidayFactor" min="0" step="0.25" value="0"></label>
-            <label>Tägliche Sollarbeitszeit<input type="number" name="dailyWorkHours" min="0" step="0.25" value="0"></label>
-            <label>Urlaubstage pro Jahr<input type="number" name="vacationDays" min="0" step="1" required></label>
-            <label class="checkbox">
-              <input type="checkbox" name="nightAllowed"> Nachtdienst Ja/Nein
-            </label>
-            <label class="checkbox">
-              <input type="checkbox" name="doubleNights"> Doppelnächte
-            </label>
-            <label class="checkbox">
-              <input type="checkbox" name="rkt"> RKT Ja/Nein
-            </label>
+            <label>E-Mail-Adresse<input type="email" name="email" placeholder="beispiel@firma.at"></label>
+            <div class="inline-fieldset">
+              <label>Eintrittsdatum<input type="date" name="hireDate"></label>
+              <label>Austrittsdatum<input type="date" name="endDate"></label>
+            </div>
+            <fieldset class="grouped" id="adminSettings">
+              <legend>Admin Einstellungen</legend>
+              <label class="checkbox"><input type="checkbox" name="admin"> Admin</label>
+              <label class="checkbox"><input type="checkbox" name="vacationApproval"> Freigabe Urlaube</label>
+              <label>Bereiche
+                <select name="areas" id="employeeAreas" multiple size="3"></select>
+              </label>
+              <div class="permission-grid">
+                <fieldset class="radio-row">
+                  <legend>Dienstplan-Rechte</legend>
+                  <label class="radio"><input type="radio" name="rosterPermission" value="write"> Dienstplan schreiben</label>
+                  <label class="radio"><input type="radio" name="rosterPermission" value="read"> Dienstplan lesen</label>
+                </fieldset>
+                <fieldset class="radio-row">
+                  <legend>Ticket-Rechte</legend>
+                  <label class="radio"><input type="radio" name="ticketPermission" value="write"> Tickets schreiben</label>
+                  <label class="radio"><input type="radio" name="ticketPermission" value="edit"> Tickets bearbeiten</label>
+                </fieldset>
+              </div>
+            </fieldset>
+            <fieldset class="grouped" id="planningSettings">
+              <legend>Dienstplaneinstellungen</legend>
+              <div class="inline-fieldset">
+                <label>Anstellung in %
+                  <select name="employmentPercent" id="employmentPercentSelect"></select>
+                </label>
+                <label>Anstellung in Stunden pro Monat
+                  <select name="employmentHours" id="employmentHoursSelect"></select>
+                </label>
+              </div>
+              <label>Funktion
+                <select name="functionId" id="functionSelect"></select>
+              </label>
+              <div class="inline-fieldset">
+                <label>Durchrechnungsfaktor<input type="text" name="holidayFactor" inputmode="decimal" value="0"></label>
+                <label>Tägliche Sollarbeitszeit<input type="text" name="dailyWorkHours" inputmode="decimal" value="0"></label>
+              </div>
+              <label>Urlaubstage pro Jahr<input type="number" name="vacationDays" min="0" step="1" required></label>
+              <div class="stacked-checkboxes">
+                <label class="checkbox">
+                  <input type="checkbox" name="nightAllowed"> Nachtdienste
+                </label>
+                <label class="checkbox">
+                  <input type="checkbox" name="doubleNights"> Doppelnächte
+                </label>
+                <label class="checkbox">
+                  <input type="checkbox" name="rkt"> RKT
+                </label>
+              </div>
+            </fieldset>
             <div class="form-actions">
               <button type="submit" class="primary">Speichern</button>
-              <button type="reset" class="ghost">Felder leeren</button>
+              <button type="button" class="ghost" id="employeeExitBtn">Ausscheiden</button>
+              <button type="reset" class="ghost">Zurücksetzen</button>
             </div>
           </form>
           <div class="vacation-panel" id="vacationPanel" hidden>
@@ -226,6 +347,16 @@
             </div>
             <div class="list" id="serviceList" aria-live="polite"></div>
           </section>
+          <section class="overview-block">
+            <div class="overview-header">
+              <p class="eyebrow">Protokoll</p>
+              <h3>Dienste-Log</h3>
+            </div>
+            <details class="log-panel" open>
+              <summary>Log anzeigen</summary>
+              <ul id="servicesLog" class="log-list"></ul>
+            </details>
+          </section>
         </div>
       </section>
 
@@ -241,9 +372,10 @@
           </div>
           <form id="functionForm" class="grid">
             <label>Funktionsname<input name="name" required></label>
-            <label>Dienste zuweisen
-              <select name="serviceIds" id="functionServices" multiple size="5"></select>
-            </label>
+            <fieldset class="inline-fieldset">
+              <legend>Dienste zuweisen</legend>
+              <div id="functionServices" class="chip-checklist"></div>
+            </fieldset>
             <div class="form-actions">
               <button type="submit" class="primary">Funktion speichern</button>
               <button type="reset" class="ghost">Felder leeren</button>
@@ -255,6 +387,16 @@
               <h3>Gespeicherte Funktionen</h3>
             </div>
             <div class="list" id="functionList" aria-live="polite"></div>
+          </section>
+          <section class="overview-block">
+            <div class="overview-header">
+              <p class="eyebrow">Protokoll</p>
+              <h3>Funktionen-Log</h3>
+            </div>
+            <details class="log-panel" open>
+              <summary>Log anzeigen</summary>
+              <ul id="functionsLog" class="log-list"></ul>
+            </details>
           </section>
         </div>
       </section>
@@ -284,6 +426,16 @@
             </div>
             <div class="list" id="employmentList" aria-live="polite"></div>
           </section>
+          <section class="overview-block">
+            <div class="overview-header">
+              <p class="eyebrow">Protokoll</p>
+              <h3>Anstellungsverhältnis-Log</h3>
+            </div>
+            <details class="log-panel" open>
+              <summary>Log anzeigen</summary>
+              <ul id="employmentLog" class="log-list"></ul>
+            </details>
+          </section>
         </div>
       </section>
 
@@ -293,7 +445,8 @@
         </div>
         <div class="admin-panel">
           <form id="rulesForm" class="grid">
-            <label>Ruhetage nach Dienst (Tage)<input type="number" name="restDays" min="0" step="1"></label>
+            <label>Ruhetage nach Nachtdienst<input type="number" name="restAfterNight" min="0" step="1"></label>
+            <label>Ruhetage nach Doppelnacht<input type="number" name="restAfterDoubleNight" min="0" step="1"></label>
             <label>Max. Arbeitszeit pro Woche (Stunden)<input type="number" name="maxHoursWeek" min="0" step="1"></label>
             <label>Freizuhaltende Wochenenden (Anzahl)<input type="number" name="minFreeWeekends" min="0" step="1"></label>
             <label>Max. Nachtdienste<input type="number" name="maxNights" min="0" step="1"></label>
@@ -308,7 +461,7 @@
                 <div class="weekday-field" data-weekday-field="1">
                   <strong>Montag</strong>
                   <div class="weekday-controls">
-                    <select data-weekday-select="1"></select>
+                    <select data-weekday-select="1" multiple size="5"></select>
                     <button type="button" data-weekday-add="1">Hinzufügen</button>
                   </div>
                   <div class="weekday-chips" data-weekday-list="1"></div>
@@ -316,7 +469,7 @@
                 <div class="weekday-field" data-weekday-field="2">
                   <strong>Dienstag</strong>
                   <div class="weekday-controls">
-                    <select data-weekday-select="2"></select>
+                    <select data-weekday-select="2" multiple size="5"></select>
                     <button type="button" data-weekday-add="2">Hinzufügen</button>
                   </div>
                   <div class="weekday-chips" data-weekday-list="2"></div>
@@ -324,7 +477,7 @@
                 <div class="weekday-field" data-weekday-field="3">
                   <strong>Mittwoch</strong>
                   <div class="weekday-controls">
-                    <select data-weekday-select="3"></select>
+                    <select data-weekday-select="3" multiple size="5"></select>
                     <button type="button" data-weekday-add="3">Hinzufügen</button>
                   </div>
                   <div class="weekday-chips" data-weekday-list="3"></div>
@@ -332,7 +485,7 @@
                 <div class="weekday-field" data-weekday-field="4">
                   <strong>Donnerstag</strong>
                   <div class="weekday-controls">
-                    <select data-weekday-select="4"></select>
+                    <select data-weekday-select="4" multiple size="5"></select>
                     <button type="button" data-weekday-add="4">Hinzufügen</button>
                   </div>
                   <div class="weekday-chips" data-weekday-list="4"></div>
@@ -340,7 +493,7 @@
                 <div class="weekday-field" data-weekday-field="5">
                   <strong>Freitag</strong>
                   <div class="weekday-controls">
-                    <select data-weekday-select="5"></select>
+                    <select data-weekday-select="5" multiple size="5"></select>
                     <button type="button" data-weekday-add="5">Hinzufügen</button>
                   </div>
                   <div class="weekday-chips" data-weekday-list="5"></div>
@@ -348,7 +501,7 @@
                 <div class="weekday-field" data-weekday-field="6">
                   <strong>Samstag</strong>
                   <div class="weekday-controls">
-                    <select data-weekday-select="6"></select>
+                    <select data-weekday-select="6" multiple size="5"></select>
                     <button type="button" data-weekday-add="6">Hinzufügen</button>
                   </div>
                   <div class="weekday-chips" data-weekday-list="6"></div>
@@ -356,7 +509,7 @@
                 <div class="weekday-field" data-weekday-field="0">
                   <strong>Sonntag</strong>
                   <div class="weekday-controls">
-                    <select data-weekday-select="0"></select>
+                    <select data-weekday-select="0" multiple size="5"></select>
                     <button type="button" data-weekday-add="0">Hinzufügen</button>
                   </div>
                   <div class="weekday-chips" data-weekday-list="0"></div>
@@ -364,7 +517,7 @@
                 <div class="weekday-field" data-weekday-field="holiday">
                   <strong>Feiertage (Salzburg)</strong>
                   <div class="weekday-controls">
-                    <select data-weekday-select="holiday"></select>
+                    <select data-weekday-select="holiday" multiple size="5"></select>
                     <button type="button" data-weekday-add="holiday">Hinzufügen</button>
                   </div>
                   <div class="weekday-chips" data-weekday-list="holiday"></div>
@@ -377,43 +530,211 @@
           </form>
           <section class="overview-block">
             <div class="overview-header">
+              <p class="eyebrow">Urlaubskapazitäten</p>
+              <h3>Ausnahmen verwalten</h3>
+            </div>
+              <form id="vacationLimitForm" class="vacation-limit-form">
+                <label>Datum von
+                  <input type="date" id="vacationLimitStart">
+                </label>
+                <label>Datum bis
+                  <input type="date" id="vacationLimitEnd">
+                </label>
+                <label>Max. Urlauber*innen
+                  <input type="number" id="vacationLimitValue" min="0" step="1">
+                </label>
+                <div class="form-actions">
+                  <button type="submit" class="ghost">Ausnahme speichern</button>
+                </div>
+              </form>
+              <div class="list" id="vacationLimitList" aria-live="polite"></div>
+            </section>
+          <section class="overview-block">
+            <div class="overview-header">
               <p class="eyebrow">Aktive Pflichtdienste</p>
               <h3>Historie</h3>
             </div>
             <div class="list" id="weekdayHistory" aria-live="polite"></div>
           </section>
-          <section class="overview-block">
-            <div class="overview-header">
-              <p class="eyebrow">Übersicht</p>
-              <h3>Regelzusammenfassung</h3>
+        <section class="overview-block">
+          <div class="overview-header">
+            <p class="eyebrow">Übersicht</p>
+            <h3>Regelzusammenfassung</h3>
+          </div>
+          <div class="list" id="rulesSummary" aria-live="polite"></div>
+        </section>
+        <section class="overview-block">
+          <div class="overview-header">
+            <p class="eyebrow">Protokoll</p>
+            <h3>Regel-Log</h3>
+          </div>
+          <details class="log-panel" open>
+            <summary>Log anzeigen</summary>
+            <ul id="rulesLog" class="log-list"></ul>
+          </details>
+        </section>
+        </div>
+      </section>
+      <section class="panel admin" data-screen="ticketCreate" hidden>
+        <div class="panel__header">
+          <h2>Ticket erstellen</h2>
+        </div>
+        <div class="admin-panel">
+          <form id="ticketForm" class="grid ticket-form">
+            <label>Ersteller*in
+              <input id="ticketReporter" name="ticketReporter" value="Alois Reichsöllner" readonly>
+            </label>
+            <label>E-Mail des Erstellers
+              <input id="ticketReporterEmail" name="ticketReporterEmail" type="email" placeholder="einmelder@beispiel.at" required>
+            </label>
+            <label>Bereich
+              <select id="ticketArea" name="ticketArea">
+                <option value="Technik">Technik</option>
+                <option value="Leitung">Leitung</option>
+                <option value="Ausbildung">Ausbildung</option>
+              </select>
+            </label>
+            <label>Ticketname
+              <input id="ticketName" name="ticketName" required placeholder="z.B. Drucker reparieren">
+            </label>
+            <label>Dringlichkeit
+              <select id="ticketPriority" name="ticketPriority">
+                <option value="hoch">Hoch</option>
+                <option value="mittel" selected>Mittel</option>
+                <option value="gering">Gering</option>
+              </select>
+            </label>
+            <label class="full-width">Ticketbeschreibung
+              <textarea id="ticketDescription" name="ticketDescription" rows="6" placeholder="Beschreibe das Anliegen"></textarea>
+            </label>
+            <div class="form-actions">
+              <button type="submit" class="primary">Speichern</button>
+              <button type="reset" class="ghost">Felder leeren</button>
             </div>
-            <div class="list" id="rulesSummary" aria-live="polite"></div>
-          </section>
-          <section class="overview-block">
-            <div class="overview-header">
-              <p class="eyebrow">Urlaubskapazitäten</p>
-              <h3>Ausnahmen verwalten</h3>
+          </form>
+        </div>
+      </section>
+      <section class="panel admin" data-screen="tickets" hidden>
+        <div class="panel__header">
+          <div>
+            <p class="eyebrow">Tickets</p>
+            <h2>Übersicht</h2>
+          </div>
+          <div class="filter-row">
+            <label>Status filtern
+              <select id="ticketStatusFilter">
+                <option value="all">Alle</option>
+                <option value="Offen">Offen</option>
+                <option value="in Bearbeitung">in Bearbeitung</option>
+                <option value="Zurückgestellt">Zurückgestellt</option>
+                <option value="Geschlossen">Geschlossen</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div class="admin-panel">
+          <div id="ticketList" class="ticket-grid" aria-live="polite"></div>
+        </div>
+      </section>
+      <section class="panel admin" data-screen="missions" hidden>
+        <div class="panel__header">
+          <div>
+            <p class="eyebrow">Live-Daten</p>
+            <h2>Einsatzzeiten</h2>
+          </div>
+          <div class="filter-row mission-controls">
+            <label>Service-URL
+              <input id="missionServiceUrl" name="missionServiceUrl" type="url" placeholder="https://example.com/api/missions">
+            </label>
+            <div class="mission-actions">
+              <button type="button" id="missionSave" class="ghost">URL speichern</button>
+              <button type="button" id="missionRefresh" class="primary">Jetzt aktualisieren</button>
             </div>
-            <form id="vacationLimitForm" class="vacation-limit-form">
-              <label>Datum von
-                <input type="date" id="vacationLimitStart">
-              </label>
-              <label>Datum bis
-                <input type="date" id="vacationLimitEnd">
-              </label>
-              <label>Max. Urlauber*innen
-                <input type="number" id="vacationLimitValue" min="0" step="1">
-              </label>
-              <div class="form-actions">
-                <button type="submit" class="ghost">Ausnahme speichern</button>
-              </div>
-            </form>
-            <div class="list" id="vacationLimitList" aria-live="polite"></div>
-          </section>
+          </div>
+        </div>
+        <div class="admin-panel">
+          <p id="missionStatus" class="muted" aria-live="polite">Keine Daten geladen.</p>
+          <div id="missionList" class="mission-grid" aria-live="polite"></div>
+        </div>
+      </section>
+      <section class="panel admin" data-screen="yearOverview" data-permission="admin" hidden>
+        <div class="panel__header">
+          <div>
+            <p class="eyebrow">Übersicht</p>
+            <h2>Jahresübersicht</h2>
+          </div>
+          <div class="year-nav">
+            <button type="button" id="yearOverviewPrev" class="ghost" aria-label="Vorheriges Jahr">←</button>
+            <span id="yearOverviewLabel" class="year-label"></span>
+            <button type="button" id="yearOverviewNext" class="ghost" aria-label="Nächstes Jahr">→</button>
+          </div>
+        </div>
+        <div class="admin-panel">
+          <div class="table-wrapper simple">
+            <table id="yearOverviewTable" class="year-table">
+              <thead>
+                <tr>
+                  <th>Mitarbeiter</th>
+                  <th>Nachtdienste</th>
+                  <th>Sonn-/Feiertagsdienste</th>
+                  <th>Freie Wochenenden</th>
+                  <th>Gearbeitete Wochenenden</th>
+                  <th>Verbrauchte Urlaubstage</th>
+                  <th>Offene Urlaubstage</th>
+                  <th>Krankenstandstage</th>
+                  <th>Pflegeurlaubstage</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+      <section class="panel admin" data-screen="scoreHistory" data-permission="admin" hidden>
+        <div class="panel__header">
+          <div>
+            <p class="eyebrow">Optimierung</p>
+            <h2>Score-Verlauf</h2>
+          </div>
+        </div>
+        <div class="admin-panel">
+          <div class="score-legend" id="scoreLegend">
+            <div>
+              <h3>Score-Legende</h3>
+              <p>
+                Niedrige Werte sind besser. Bis ca. 2.000 gilt als <strong>sehr gut</strong>, 2.000–8.000 als
+                <strong>ok</strong>, 8.000–15.000 als <strong>ausbaufähig</strong>, darüber <strong>kritisch</strong>.
+              </p>
+              <p>
+                Der Gesamt-Penalty summiert Stunden-, Wochenend-, Feiertags-, Nacht- und Inselstrafen. Pro Mitarbeiter
+                wird sein individueller Anteil ausgewiesen. Nach jedem Lauf wird festgehalten, wie viele Dienst-Tausche
+                erfolgt sind und ob die Gewichte angepasst wurden.
+              </p>
+            </div>
+          </div>
+          <div class="table-wrapper simple">
+            <table id="scoreHistoryTable" class="score-table">
+              <thead>
+                <tr>
+                  <th>Monat</th>
+                  <th>Score</th>
+                  <th>Pro Mitarbeiter</th>
+                  <th>Metriken</th>
+                  <th>Gewichte</th>
+                  <th>Tausche</th>
+                  <th>Lernhinweis</th>
+                  <th>Erstellt</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
       </section>
     </div>
   </main>
+
+  <div id="notificationStack" class="toast-stack" aria-live="polite"></div>
 
   <script src="app.js"></script>
 </body>
