@@ -227,7 +227,9 @@ button.ghost { background: transparent; }
 }
 
 .panel .overview-block + .overview-block {
-  margin-top: 2rem;
+  margin-top: 4rem;
+  padding-top: .5rem;
+  border-top: 2px solid var(--border);
 }
 
 .panel__header { display: flex; flex-direction: column; gap: .75rem; }
@@ -339,7 +341,7 @@ input:focus, select:focus { outline: 2px solid #22d3ee55; border-color: #22d3ee;
   transform: none;
 }
 
-.list { padding-top: 0; border-top: none; display: grid; gap: 1.25rem; }
+.list { padding-top: 0; border-top: none; display: grid; gap: 2rem; }
 .list .item {
   background: #0b1224;
   border: 1px solid var(--border);
@@ -754,7 +756,7 @@ input:focus, select:focus { outline: 2px solid #22d3ee55; border-color: #22d3ee;
   gap: .75rem;
 }
 
-.today-dashboard:empty { display: none; }
+
 
 .today-dashboard__header {
   display: flex;

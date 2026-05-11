@@ -2206,7 +2206,15 @@ function buildRosterHeader(date) {
 function renderTodayDashboard() {
   const el = document.getElementById('todayDashboard');
   if (!el) return;
+  try {
+    _renderTodayDashboardInner(el);
+  } catch (err) {
+    console.error('Tages-Dashboard Fehler:', err);
+    el.innerHTML = '<p class="muted" style="padding:.5rem">Dashboard konnte nicht geladen werden.</p>';
+  }
+}
 
+function _renderTodayDashboardInner(el) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const todayKey = formatISODate(today);
