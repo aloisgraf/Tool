@@ -2203,8 +2203,105 @@ function buildRosterHeader(date) {
   headerRows.forEach((row) => rosterTable.appendChild(row));
 }
 
+function renderTodayDashboard() {
+  const el = document.getElementById('todayDashboard');
+  if (!el) return;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayKey = formatISODate(today);
+  const monthKey = getMonthKey(today);
+  const day = today.getDate();
+
+  const activeEmployees = state.employees.filter((emp) => isEmployeeActiveOnDate(emp, today));
+  const totalActive = activeEmployees.length;
+
+  let onVacation = 0;
+  let onSick = 0;
+  let onDuty = 0;
+  const vacationNames = [];
+  const sickNames = [];
+  const birthdayNames = [];
+
+  activeEmployees.forEach((emp) => {
+    const vacation = findVacationOnDate(emp, today);
+    const sick = findSickOnDate(emp, today);
+    const vacType = vacation ? VACATION_TYPES[vacation.type] : null;
+    const sickType = sick ? SICK_TYPES[sick.kind] : null;
+    const isClearedVacation = vacation && vacType?.clearsAssignments;
+    const isClearedSick = sick && sickType?.clearsAssignments;
+
+    if (isClearedVacation) {
+      onVacation++;
+      vacationNames.push(`${emp.firstName} ${emp.lastName}`);
+    } else if (isClearedSick) {
+      onSick++;
+      sickNames.push(`${emp.firstName} ${emp.lastName}`);
+    } else {
+      const assigned = state.assignments?.[monthKey]?.[emp.id]?.[day];
+      if (assigned) onDuty++;
+    }
+
+    const bday = emp.birthday;
+    if (bday) {
+      const [, bMonth, bDay] = bday.split('-');
+      const todayMonth = String(today.getMonth() + 1).padStart(2, '0');
+      const todayDay = String(today.getDate()).padStart(2, '0');
+      if (bMonth === todayMonth && bDay === todayDay) {
+        birthdayNames.push(`${emp.firstName} ${emp.lastName}`);
+      }
+    }
+  });
+
+  const missingServices = remainingServicesForDay(day, monthKey, today);
+  const allCovered = missingServices.length === 0;
+  const hasRequiredServices = (getRequiredServiceIdsForDate(today) || []).length > 0;
+
+  const dateLabel = today.toLocaleDateString('de-AT', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+
+  const coverageHtml = hasRequiredServices
+    ? allCovered
+      ? `<div class="today-coverage today-coverage--ok">Alle Pflichtdienste besetzt</div>`
+      : `<div class="today-coverage today-coverage--warn">Fehlende Pflichtdienste: ${missingServices.map((s) => `<strong>${escapeHtml(s.name)}</strong>`).join(', ')}</div>`
+    : '';
+
+  const birthdayHtml = birthdayNames.length
+    ? `<div class="today-birthdays">Geburtstag: ${birthdayNames.map(escapeHtml).join(', ')}</div>`
+    : '';
+
+  const tooltipAttr = (names) => names.length ? ` title="${escapeHtml(names.join(', '))}"` : '';
+
+  el.innerHTML = `
+    <div class="today-dashboard__header">
+      <span class="eyebrow">Heute</span>
+      <span class="today-date">${escapeHtml(dateLabel)}</span>
+    </div>
+    <div class="today-stats">
+      <div class="today-stat">
+        <span class="today-stat__value">${totalActive}</span>
+        <span class="today-stat__label">Aktive MA</span>
+      </div>
+      <div class="today-stat today-stat--duty"${tooltipAttr([])}>
+        <span class="today-stat__value">${onDuty}</span>
+        <span class="today-stat__label">Im Dienst</span>
+      </div>
+      <div class="today-stat today-stat--vacation"${tooltipAttr(vacationNames)}>
+        <span class="today-stat__value">${onVacation}</span>
+        <span class="today-stat__label">Urlaub</span>
+      </div>
+      <div class="today-stat today-stat--sick"${tooltipAttr(sickNames)}>
+        <span class="today-stat__value">${onSick}</span>
+        <span class="today-stat__label">Krank</span>
+      </div>
+    </div>
+    ${coverageHtml}
+    ${birthdayHtml}
+  `;
+}
+
 function renderRoster() {
   buildRosterHeader(currentMonth);
+  renderTodayDashboard();
   const monthKey = getMonthKey(currentMonth);
   ensureMonthMaps(monthKey);
   const days = daysInMonth(currentMonth);
