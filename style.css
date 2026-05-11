@@ -227,7 +227,7 @@ button.ghost { background: transparent; }
 }
 
 .panel .overview-block + .overview-block {
-  margin-top: 1rem;
+  margin-top: 2rem;
 }
 
 .panel__header { display: flex; flex-direction: column; gap: .75rem; }
@@ -339,12 +339,12 @@ input:focus, select:focus { outline: 2px solid #22d3ee55; border-color: #22d3ee;
   transform: none;
 }
 
-.list { padding-top: 0; border-top: none; display: grid; gap: .85rem; }
+.list { padding-top: 0; border-top: none; display: grid; gap: 1.25rem; }
 .list .item {
   background: #0b1224;
   border: 1px solid var(--border);
   border-radius: .9rem;
-  padding: .85rem;
+  padding: 1rem 1.1rem;
   display: flex;
   flex-direction: column;
   gap: .65rem;
@@ -354,11 +354,33 @@ input:focus, select:focus { outline: 2px solid #22d3ee55; border-color: #22d3ee;
 .employee-card__meta { font-size: .85rem; color: var(--muted); }
 .card-details { border-top: 1px solid var(--border); padding-top: .65rem; display: flex; flex-direction: column; gap: .5rem; }
 .card-details details,
-.list .item > details { border: 1px solid rgba(148, 163, 184, 0.3); border-radius: .75rem; padding: .5rem .75rem; background: rgba(10, 15, 27, 0.9); }
+.list .item > details {
+  margin-left: 1.25rem;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-left: 3px solid rgba(34, 211, 238, 0.45);
+  border-radius: .75rem;
+  padding: .5rem .75rem;
+  background: rgba(10, 15, 27, 0.9);
+  position: relative;
+}
+.card-details details::before,
+.list .item > details::before {
+  content: '';
+  position: absolute;
+  left: -1.25rem;
+  top: 50%;
+  width: 1rem;
+  height: 1px;
+  background: rgba(148, 163, 184, 0.3);
+}
 .card-details summary,
 .list .item > details > summary { list-style: none; cursor: pointer; font-weight: 600; display: flex; justify-content: space-between; gap: .35rem; align-items: center; }
 .card-details summary::-webkit-details-marker,
 .list .item > details > summary::-webkit-details-marker { display: none; }
+.card-details summary::after,
+.list .item > details > summary::after { content: '›'; font-size: 1.1rem; color: var(--muted); transition: transform 150ms ease; }
+.card-details details[open] > summary::after,
+.list .item > details[open] > summary::after { transform: rotate(90deg); }
 .card-details ul,
 .list .item > details > ul { list-style: none; margin: .5rem 0 0; padding: 0; display: flex; flex-direction: column; gap: .35rem; font-size: .9rem; }
 .card-details li,
